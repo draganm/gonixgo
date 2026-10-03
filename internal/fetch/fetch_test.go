@@ -93,7 +93,17 @@ func TestRunDownloadsAModule(t *testing.T) {
 func TestRunReportsDownloadFailure(t *testing.T) {
 	m := Manifest{Go: testutil.Go(t), Path: "example.invalid/nothing", Version: "v1.0.0"}
 	t.Setenv("GOPROXY", "off")
-	if err := Run(m, filepath.Join(t.TempDir(), "out"), t.TempDir()); err == nil {
+	work := t.TempDir()
+	if err := Run(m, filepath.Join(t.TempDir(), "out"), work); err == nil {
 		t.Fatal("Run succeeded with GOPROXY=off")
+	}
+	home := filepath.Join(work, "home")
+	for _, dir := range []string{
+		filepath.Join(home, "Library", "Application Support", "go", "telemetry"),
+		filepath.Join(home, ".config", "go", "telemetry"),
+	} {
+		if _, err := os.Stat(filepath.Join(dir, "local")); err == nil {
+			t.Errorf("telemetry wrote %s/local", dir)
+		}
 	}
 }

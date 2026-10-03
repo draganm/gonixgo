@@ -95,6 +95,30 @@ func TestAsmDefines(t *testing.T) {
 	}
 }
 
+func TestNewDisablesTelemetry(t *testing.T) {
+	work := t.TempDir()
+	tc, err := New(testutil.Go(t), "", "", work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tc.Tool(t.TempDir(), nil, "compile", "-V"); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(work, "home")
+	for _, dir := range []string{
+		filepath.Join(home, "Library", "Application Support", "go", "telemetry"),
+		filepath.Join(home, ".config", "go", "telemetry"),
+	} {
+		mode, err := os.ReadFile(filepath.Join(dir, "mode"))
+		if err != nil || strings.TrimSpace(string(mode)) != "off" {
+			t.Errorf("%s/mode = %q, %v; want off", dir, mode, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "local")); err == nil {
+			t.Errorf("telemetry wrote %s/local", dir)
+		}
+	}
+}
+
 func TestToolReportsFailure(t *testing.T) {
 	tc, err := New(testutil.Go(t), "", "", t.TempDir())
 	if err != nil {

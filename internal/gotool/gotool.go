@@ -35,6 +35,9 @@ func New(goBin, goos, goarch, workDir string) (*Toolchain, error) {
 	if err := os.MkdirAll(t.home, 0o755); err != nil {
 		return nil, err
 	}
+	if err := DisableTelemetry(t.home); err != nil {
+		return nil, err
+	}
 	cmd := exec.Command(goBin, append([]string{"env", "-json"}, envKeys...)...)
 	cmd.Env = t.environ()
 	cmd.Stderr = os.Stderr
@@ -50,6 +53,27 @@ func New(goBin, goos, goarch, workDir string) (*Toolchain, error) {
 	return t, nil
 }
 
+// DisableTelemetry turns Go's telemetry off for a go command run with
+// HOME=home and XDG_CONFIG_HOME=home/.config. Otherwise every go invocation
+// writes counter files into home and starts a detached child process that
+// outlives the build step. Go reads the mode from os.UserConfigDir, which
+// is under Library/Application Support on darwin and XDG_CONFIG_HOME
+// elsewhere.
+func DisableTelemetry(home string) error {
+	for _, dir := range []string{
+		filepath.Join(home, "Library", "Application Support", "go", "telemetry"),
+		filepath.Join(home, ".config", "go", "telemetry"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "mode"), []byte("off"), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // environ is a minimal environment: nothing from the caller's Go
 // configuration leaks into a build step.
 func (t *Toolchain) environ(extra ...string) []string {
@@ -57,6 +81,7 @@ func (t *Toolchain) environ(extra ...string) []string {
 		"PATH=" + os.Getenv("PATH"),
 		"TMPDIR=" + os.Getenv("TMPDIR"),
 		"HOME=" + t.home,
+		"XDG_CONFIG_HOME=" + filepath.Join(t.home, ".config"),
 		"GOCACHE=" + filepath.Join(t.home, "gocache"),
 		"GOENV=off",
 		"GOFLAGS=",

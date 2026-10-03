@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/draganm/gonixgo/internal/gotool"
 )
 
 // Manifest names the module to download. The fetchModule builder in
@@ -25,12 +27,20 @@ type Manifest struct {
 // the result does not depend on which proxy served it.
 func Run(m Manifest, outDir, workDir string) error {
 	modCache := filepath.Join(workDir, "modcache")
+	home := filepath.Join(workDir, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return err
+	}
+	if err := gotool.DisableTelemetry(home); err != nil {
+		return err
+	}
 	cmd := exec.Command(m.Go, "mod", "download", m.Path+"@"+m.Version)
 	cmd.Dir = workDir
 	// GOPROXY, NETRC and the proxy variables come from the environment:
 	// the derivation lists them as impureEnvVars.
 	cmd.Env = append(os.Environ(),
-		"HOME="+filepath.Join(workDir, "home"),
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"GOMODCACHE="+modCache,
 		"GOCACHE="+filepath.Join(workDir, "gocache"),
 		"GOENV=off",
