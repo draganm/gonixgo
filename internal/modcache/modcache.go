@@ -45,7 +45,10 @@ type Seeder struct {
 	// nil disables pre-seeding.
 	Add func(name, dir string) (string, error)
 	// Warn reports problems that do not stop evaluation. nil discards them.
+	// Calls are serialised, so Warn need not be safe for concurrent use.
 	Warn func(format string, args ...any)
+
+	warnMu sync.Mutex
 }
 
 // Prepare fills in the Hash of every module and, when pre-seeding is on,
@@ -160,6 +163,8 @@ func (s *Seeder) remember(m *graph.Module, sum [32]byte) {
 
 func (s *Seeder) warn(format string, args ...any) {
 	if s.Warn != nil {
+		s.warnMu.Lock()
+		defer s.warnMu.Unlock()
 		s.Warn(format, args...)
 	}
 }

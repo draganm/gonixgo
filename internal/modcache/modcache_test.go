@@ -196,6 +196,27 @@ func TestPrepareWarnsWhenAddFails(t *testing.T) {
 	}
 }
 
+func TestPrepareSerialisesWarnings(t *testing.T) {
+	var mods []*graph.Module
+	for _, key := range []string{"example.com/a@v1.0.0", "example.com/b@v1.0.0", "example.com/c@v1.0.0", "example.com/d@v1.0.0",
+		"example.com/e@v1.0.0", "example.com/f@v1.0.0", "example.com/g@v1.0.0", "example.com/h@v1.0.0"} {
+		mods = append(mods, module(t, key, map[string]string{"x.go": "package x\n"}))
+	}
+	// A plain slice: Prepare must not call Warn concurrently.
+	var warnings []string
+	s := &Seeder{
+		StoreDir: t.TempDir(),
+		Add:      func(string, string) (string, error) { return "", errors.New("daemon unreachable") },
+		Warn:     func(format string, args ...any) { warnings = append(warnings, format) },
+	}
+	if err := s.Prepare(mods); err != nil {
+		t.Fatalf("Prepare failed, want warnings: %v", err)
+	}
+	if len(warnings) != len(mods) {
+		t.Fatalf("got %d warnings, want %d", len(warnings), len(mods))
+	}
+}
+
 func TestPrepareFailsOnMismatch(t *testing.T) {
 	m := module(t, "example.com/a@v1.0.0", map[string]string{"a.go": "package a\n"})
 	s := &Seeder{StoreDir: t.TempDir(), Add: func(string, string) (string, error) { return "/elsewhere/x", nil }}
