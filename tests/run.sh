@@ -89,10 +89,12 @@ check_incremental() {
   echo "ok: $1: editing $2 changes [$3]"
 }
 
-# Without the option, evaluation must say what to set.
+# Without the option, evaluation must say what to set. The option is
+# turned off explicitly, in case nix.conf turns it on.
 check_exec_error() {
   local msg
-  if msg="$(nix build --no-link "$flake#fixtures.hello-deps" 2>&1)"; then
+  if msg="$(nix build --option allow-unsafe-native-code-during-evaluation false \
+    --no-link "$flake#fixtures.hello-deps" 2>&1)"; then
     fail "building without builtins.exec succeeded"
   fi
   case "$msg" in
