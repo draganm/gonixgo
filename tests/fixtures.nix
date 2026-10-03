@@ -12,4 +12,8 @@
     subPackages = [ "." "cmd/second" ];
     ldflags = [ "-X main.version=1.2.3" ];
   };
+  nethttp = goEnv.buildGoApplication {
+    pname = "nethttp";
+    src = ./fixtures/nethttp;
+  };
 }

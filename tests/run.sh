@@ -134,6 +134,9 @@ check_modinfo asm-embed asmembed .
 check_modinfo asm-embed second ./cmd/second
 check_distinct_build_ids asm-embed asmembed second
 
+check_run nethttp nethttp "pong true"
+check_modinfo nethttp nethttp .
+
 # A package edit rebuilds it, its importers and the link. Nothing else.
 check_incremental hello-deps internal/greet/greet.go \
   "example.com/hello example.com/hello/internal/greet bin:hello"
