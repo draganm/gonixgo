@@ -101,6 +101,22 @@ check_exec_error() {
   esac
 }
 
+# Choosing a Go version is mkGoEnv's most common customisation; passing
+# only go must work.
+check_go_override() {
+  local got
+  got="$(nix eval --impure --raw --expr "
+    let
+      flake = builtins.getFlake \"$flake\";
+      pkgs = flake.inputs.nixpkgs.legacyPackages.\${builtins.currentSystem};
+    in (flake.lib.mkGoEnv { inherit pkgs; go = pkgs.go_1_25; }).go.version
+  ")" || fail "mkGoEnv with go = pkgs.go_1_25 does not evaluate"
+  case "$got" in
+    1.25*) echo "ok: mkGoEnv accepts go = pkgs.go_1_25" ;;
+    *) fail "mkGoEnv with go = pkgs.go_1_25 uses Go $got" ;;
+  esac
+}
+
 # The fetch derivation normally never runs, because resolve pre-seeds its
 # output. Force it to run and let nix compare the result with the store.
 check_fetch_fallback() {
@@ -126,6 +142,7 @@ check_incremental hello-deps main.go "example.com/hello bin:hello"
 check_incremental hello-deps NOTES.md ""
 
 check_exec_error
+check_go_override
 check_fetch_fallback hello-deps "github.com/mattn/go-isatty@v0.0.20"
 
 echo "all integration checks passed"
