@@ -22,7 +22,10 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 	case m.Replace != nil:
 		return nil, nil, fmt.Errorf("%s: module %s is replaced; replace directives are not supported yet", p.ImportPath, m.Path)
 	case hasNonGo(p):
-		return nil, nil, fmt.Errorf("%s: cgo, C, C++, Objective-C, Fortran, SWIG and .syso files are not supported yet", p.ImportPath)
+		// cgo is on by default, so this is the first error many projects
+		// hit; say how to get past it when the package has a pure-Go build.
+		return nil, nil, fmt.Errorf("%s: cgo, C, C++, Objective-C, Fortran, SWIG and .syso files are not supported yet; "+
+			"if the package also builds without cgo, set CGO_ENABLED = 0 in buildGoApplication", p.ImportPath)
 	}
 
 	pkg := &Package{

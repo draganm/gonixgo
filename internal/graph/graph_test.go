@@ -221,6 +221,7 @@ func TestBuildRejectsUnsupported(t *testing.T) {
 		want string
 	}{
 		{"cgo", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, CgoFiles: []string{"cgo.go"}}, "are not supported yet"},
+		{"cgo hint", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, CgoFiles: []string{"cgo.go"}}, "if the package also builds without cgo, set CGO_ENABLED = 0 in buildGoApplication"},
 		{"syso", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, SysoFiles: []string{"x.syso"}}, "are not supported yet"},
 		{"replace", golist.Package{ImportPath: "github.com/x/y", Name: "y", Dir: "/elsewhere", DepOnly: true, GoFiles: []string{"y.go"},
 			Module: &golist.Module{Path: "github.com/x/y", Version: "v1.0.0", Replace: &golist.Module{Path: "../y", Dir: "/elsewhere"}}}, "replace directives are not supported yet"},
