@@ -1,0 +1,116 @@
+// Package link links one main package into a binary, the way cmd/go does
+// with -trimpath, without cmd/go.
+package link
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/draganm/gonixgo/internal/gotool"
+	modinfopkg "github.com/draganm/gonixgo/internal/modinfo"
+)
+
+// Manifest describes one link. The link builder in nix/builders.nix
+// produces it.
+type Manifest struct {
+	Go         string   `json:"go"`
+	GOOS       string   `json:"goos"`
+	GOARCH     string   `json:"goarch"`
+	BinName    string   `json:"binName"`
+	Main       string   `json:"main"`       // the main package's archive
+	Importcfgs []string `json:"importcfgs"` // fragments for the standard library, the main package and its transitive imports
+	Modinfo    string   `json:"modinfo"`    // module info to embed
+	Godebug    string   `json:"godebug"`    // DefaultGODEBUG, "" for none
+	LDFlags    []string `json:"ldflags"`
+}
+
+// Run links the binary to outDir/bin/<BinName>.
+func Run(m Manifest, outDir, workDir string) error {
+	tc, err := gotool.New(m.Go, m.GOOS, m.GOARCH, workDir)
+	if err != nil {
+		return err
+	}
+	ldflags, err := SplitFlags(m.LDFlags)
+	if err != nil {
+		return err
+	}
+
+	importcfg := filepath.Join(workDir, "importcfg.link")
+	if err := gotool.ConcatFiles(importcfg, m.Importcfgs); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(importcfg, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(f, "modinfo %q\n", modinfopkg.Wrap(m.Modinfo))
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+
+	binDir := filepath.Join(outDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return err
+	}
+	args := []string{"-o", filepath.Join(binDir, m.BinName), "-importcfg", importcfg}
+	if m.Godebug != "" {
+		args = append(args, "-X=runtime.godebugDefault="+m.Godebug)
+	}
+	mode := "exe"
+	if tc.PIE() {
+		mode = "pie"
+	}
+	args = append(args, "-buildmode="+mode, "-buildid=redacted")
+	args = append(args, ldflags...)
+	args = append(args, m.Main)
+
+	// An empty GOROOT keeps the toolchain's path out of the binary, as
+	// go build -trimpath does.
+	return tc.Tool(workDir, []string{"GOROOT="}, "link", args...)
+}
+
+// SplitFlags splits each element the way `go build -ldflags` splits its
+// argument: on white space, with a leading single or double quote grouping
+// up to its match. There is no unescaping inside quotes.
+func SplitFlags(flags []string) ([]string, error) {
+	var out []string
+	for _, flag := range flags {
+		s := flag
+		for {
+			for len(s) > 0 && isSpace(s[0]) {
+				s = s[1:]
+			}
+			if len(s) == 0 {
+				break
+			}
+			if quote := s[0]; quote == '"' || quote == '\'' {
+				s = s[1:]
+				end := 0
+				for end < len(s) && s[end] != quote {
+					end++
+				}
+				if end == len(s) {
+					return nil, fmt.Errorf("ldflags %q: unterminated %c string", flag, quote)
+				}
+				out = append(out, s[:end])
+				s = s[end+1:]
+				continue
+			}
+			end := 0
+			for end < len(s) && !isSpace(s[end]) {
+				end++
+			}
+			out = append(out, s[:end])
+			s = s[end:]
+		}
+	}
+	return out, nil
+}
+
+func isSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
