@@ -5,4 +5,11 @@
     pname = "hello-deps";
     src = ./fixtures/hello-deps;
   };
+  asm-embed = goEnv.buildGoApplication {
+    pname = "asm-embed";
+    version = "1.2.3";
+    src = ./fixtures/asm-embed;
+    subPackages = [ "." "cmd/second" ];
+    ldflags = [ "-X main.version=1.2.3" ];
+  };
 }

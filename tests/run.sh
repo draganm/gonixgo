@@ -45,7 +45,72 @@ check_modinfo() {
   echo "ok: $1: $2 module info matches go build"
 }
 
+# check_incremental <fixture> <file to append to> <what must change>
+# Evaluates the fixture from two copies that differ in one file and lists
+# the nodes whose derivations differ: package import paths, then bin:<name>,
+# then mod:<key>.
+check_incremental() {
+  local a b got
+  a="$(mktemp -d)"
+  b="$(mktemp -d)"
+  cp -R "$root/tests/fixtures/$1/." "$a/"
+  cp -R "$root/tests/fixtures/$1/." "$b/"
+  printf '\n// edited\n' >>"$b/$2"
+  got="$(nix eval --impure --raw "${exec_opt[@]}" --expr "
+    let
+      goEnv = (builtins.getFlake \"$flake\").legacyPackages.\${builtins.currentSystem}.goEnv;
+      build = src: goEnv.buildGoApplication { pname = \"incremental\"; inherit src; };
+      a = build $a;
+      b = build $b;
+      changed = set: builtins.filter
+        (n: a.\${set}.\${n}.drvPath != b.\${set}.\${n}.drvPath)
+        (builtins.attrNames a.\${set});
+    in builtins.concatStringsSep \" \" (
+      changed \"packages\"
+      ++ map (n: \"bin:\" + n) (changed \"bins\")
+      ++ map (n: \"mod:\" + n) (changed \"modules\"))
+  ")"
+  rm -rf "$a" "$b"
+  [ "$got" = "$3" ] || fail "$1: editing $2 changed [$got], want [$3]"
+  echo "ok: $1: editing $2 changes [$3]"
+}
+
+# Without the option, evaluation must say what to set.
+check_exec_error() {
+  local msg
+  if msg="$(nix build --no-link "$flake#fixtures.hello-deps" 2>&1)"; then
+    fail "building without builtins.exec succeeded"
+  fi
+  case "$msg" in
+    *allow-unsafe-native-code-during-evaluation*) echo "ok: missing builtins.exec is explained" ;;
+    *) fail "unhelpful error without builtins.exec: $msg" ;;
+  esac
+}
+
+# The fetch derivation normally never runs, because resolve pre-seeds its
+# output. Force it to run and let nix compare the result with the store.
+check_fetch_fallback() {
+  nix build "${exec_opt[@]}" --rebuild --no-link "$flake#fixtures.$1.modules.\"$2\"" ||
+    fail "$1: the fetch derivation for $2 does not reproduce the pre-seeded module"
+  echo "ok: $1: fetching $2 reproduces the pre-seeded module"
+}
+
 check_run hello-deps hello "hello, gonixgo"
 check_modinfo hello-deps hello .
+
+check_run asm-embed asmembed "3 hi [extra.txt index.html] 1.2.3"
+check_run asm-embed second "second"
+check_modinfo asm-embed asmembed .
+check_modinfo asm-embed second ./cmd/second
+
+# A package edit rebuilds it, its importers and the link. Nothing else.
+check_incremental hello-deps internal/greet/greet.go \
+  "example.com/hello example.com/hello/internal/greet bin:hello"
+check_incremental hello-deps main.go "example.com/hello bin:hello"
+# A file no package uses changes nothing.
+check_incremental hello-deps NOTES.md ""
+
+check_exec_error
+check_fetch_fallback hello-deps "github.com/mattn/go-isatty@v0.0.20"
 
 echo "all integration checks passed"
