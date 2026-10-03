@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/draganm/gonixgo/internal/testutil"
@@ -159,20 +160,30 @@ func TestAppendObjects(t *testing.T) {
 	}
 	odd := filepath.Join(dir, "odd.o")
 	even := filepath.Join(dir, "a-rather-long-object-name.o")
+	accented := filepath.Join(dir, "ünïcödé.o")
 	if err := os.WriteFile(odd, []byte("abc"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(even, []byte("abcd"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := appendObjects(archive, []string{odd, even}); err != nil {
+	if err := os.WriteFile(accented, []byte("xy"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := appendObjects(archive, []string{odd, even, accented}); err != nil {
+		t.Fatal(err)
+	}
+	// The name field is 16 bytes, not 16 runes.
 	header := func(name string, size int) string {
-		return fmt.Sprintf("%-16s%-12d%-6d%-6d%-8o%-10d`\n", name, 0, 0, 0, 0o644, size)
+		h := name + strings.Repeat(" ", 16-len(name)) + fmt.Sprintf("%-12d%-6d%-6d%-8o%-10d`\n", 0, 0, 0, 0o644, size)
+		if len(h) != 60 {
+			t.Fatalf("test header for %q is %d bytes", name, len(h))
+		}
+		return h
 	}
 	// Members are padded to an even length; names are cut to 16 bytes.
-	want := "!<arch>\n" + header("odd.o", 3) + "abc\x00" + header("a-rather-long-ob", 4) + "abcd"
+	want := "!<arch>\n" + header("odd.o", 3) + "abc\x00" + header("a-rather-long-ob", 4) + "abcd" +
+		header("ünïcödé.o", 2) + "xy"
 	got, err := os.ReadFile(archive)
 	if err != nil {
 		t.Fatal(err)

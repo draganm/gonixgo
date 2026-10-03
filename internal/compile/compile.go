@@ -166,11 +166,13 @@ func appendObjects(archive string, objects []string) error {
 		if err != nil {
 			return err
 		}
-		name := filepath.Base(object)
-		if len(name) > 16 {
-			name = name[:16]
-		}
-		fmt.Fprintf(w, "%-16s%-12d%-6d%-6d%-8o%-10d`\n", name, 0, 0, 0, 0o644, len(data))
+		// The name field is 16 bytes. Build it by bytes: %-16s would pad
+		// by runes and break the 60-byte header for a non-ASCII name.
+		var name [16]byte
+		copy(name[:], strings.Repeat(" ", 16))
+		copy(name[:], filepath.Base(object))
+		w.Write(name[:])
+		fmt.Fprintf(w, "%-12d%-6d%-6d%-8o%-10d`\n", 0, 0, 0, 0o644, len(data))
 		w.Write(data)
 		if len(data)%2 != 0 {
 			w.WriteByte(0)
