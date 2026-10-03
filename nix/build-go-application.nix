@@ -56,7 +56,10 @@ let
 in
 runCommand (if version == null then pname else "${pname}-${version}")
 {
-  inherit meta;
+  # With one binary, `nix run` needs no flags.
+  meta =
+    let names = lib.attrNames checked.bins;
+    in lib.optionalAttrs (lib.length names == 1) { mainProgram = lib.head names; } // meta;
   passthru = {
     inherit go;
     graph = checked;

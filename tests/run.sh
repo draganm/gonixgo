@@ -101,6 +101,15 @@ check_exec_error() {
   esac
 }
 
+# With one binary, nix run finds it through meta.mainProgram.
+check_main_program() {
+  local got
+  got="$(nix eval "${exec_opt[@]}" --raw "$flake#fixtures.$1.meta.mainProgram")" ||
+    fail "$1: meta.mainProgram does not evaluate"
+  [ "$got" = "$2" ] || fail "$1: meta.mainProgram is '$got', want '$2'"
+  echo "ok: $1: meta.mainProgram is $2"
+}
+
 # Choosing a Go version is mkGoEnv's most common customisation; passing
 # only go must work.
 check_go_override() {
@@ -127,6 +136,7 @@ check_fetch_fallback() {
 
 check_run hello-deps hello "hello, gonixgo"
 check_modinfo hello-deps hello .
+check_main_program hello-deps hello
 
 check_run asm-embed asmembed "3 hi [extra.txt index.html] 1.2.3"
 check_run asm-embed second "second"
