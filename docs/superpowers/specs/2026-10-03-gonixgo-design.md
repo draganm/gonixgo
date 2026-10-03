@@ -78,13 +78,16 @@ Non-flake use: `import gonixgo { inherit pkgs; }` returns the same set as
 |---|---|---|
 | `pkgs` | required | The nixpkgs instance. Target platform is `pkgs.stdenv.hostPlatform`. |
 | `go` | `pkgs.buildPackages.go` | Toolchain used inside derivations. |
-| `evalPkgs` | `pkgs.buildPackages` | Package set whose tool and Go run on the evaluating machine. Override only when the evaluating machine differs from the build platform. |
+| `evalPkgs` | `null` | Package set whose tool runs on the evaluating machine; `null` means `pkgs.buildPackages`. Override only when the evaluating machine differs from the build platform. |
+| `evalGo` | `null` | Go that runs `go list` on the evaluating machine; `null` means `evalPkgs.go` when `evalPkgs` is given, otherwise `go`. |
 
 Returns `{ buildGoApplication, tool, go, stdlib, builders }`. `stdlib` is a
 function from the cgo setting to the standard-library derivation.
 
-`evalPkgs.go.version` must equal `go.version`; `mkGoEnv` asserts this so the
-file lists resolved at evaluation match what is compiled.
+The evaluation-time Go's version must equal `go.version`; `mkGoEnv` asserts
+this so the file lists resolved at evaluation match what is compiled. Passing
+only `go`, for example `go = pkgs.go_1_25`, therefore works: the same Go
+resolves and builds.
 
 ### `buildGoApplication`
 
@@ -262,12 +265,19 @@ and builders cannot drift and carries no version number.
 
 ### Environment for `go list`
 
-Set by the tool: `GOFLAGS=-mod=readonly`, `GOWORK=off`, `GOTOOLCHAIN=local`,
-`GOOS`, `GOARCH`, `CGO_ENABLED`, and the build tags.
+Set by the tool: `GOENV=off`, `GOFLAGS=-mod=readonly`, `GOWORK=off`,
+`GOTOOLCHAIN=local`, `GOOS`, `GOARCH`, `CGO_ENABLED`, and the build tags. The
+caller's build configuration (`GOOS`, `GOARCH`, `CGO_ENABLED`, the
+architecture level keys, `GOEXPERIMENT`, `GOFIPS140`, `GO111MODULE`, `GOROOT`)
+is dropped, so the same source resolves to the same graph in every shell, as
+the builders see it.
 
-Inherited from the caller: `HOME`, `PATH`, `GOMODCACHE`, `GOPROXY`,
-`GOPRIVATE`, `GONOSUMDB`, `GOSUMDB`, `NETRC`, and the Go env file. Go
-downloads missing modules and verifies them against `go.sum`.
+Carried over from the caller: where modules come from. The tool first runs
+`go env` with the caller's environment and Go env file for `GOPROXY`,
+`GOPRIVATE`, `GONOPROXY`, `GONOSUMDB`, `GOSUMDB`, `GOINSECURE`, `GOVCS`,
+`GOMODCACHE`, `GOPATH` and `GOAUTH`, and sets those values explicitly.
+`HOME`, `PATH`, `NETRC` and the proxy variables are inherited. Go downloads
+missing modules and verifies them against `go.sum`.
 
 ### What evaluation requires
 
@@ -276,7 +286,7 @@ downloads missing modules and verifies them against `go.sum`.
 - Network access, or a module cache that already holds the project's modules.
 - Import-from-derivation allowed (the default), since the tool and Go are
   built during evaluation.
-- The evaluating machine must be able to run `evalPkgs`' tool and Go.
+- The evaluating machine must be able to run the evaluation-time tool and Go.
 
 ## Module hashing and pre-seeding
 
@@ -361,7 +371,9 @@ use stdenv.
 
 Writes the link importcfg (standard library, the main package, its transitive
 dependencies, and a `modinfo` line), then runs `go tool link` with the caller's
-`ldflags`. The C toolchain is available when cgo is enabled, and the linker
+`ldflags`. The build ID is derived from a hash of the link manifest, which
+names every input's store path: the linker turns it into the Mach-O `LC_UUID`
+and the ELF build ID, so each binary gets its own, reproducibly. The C toolchain is available when cgo is enabled, and the linker
 chooses internal or external linking as it does under `go build`.
 
 The module info matches `go build -trimpath`: `path`, `mod`, one `dep` line per
@@ -460,7 +472,9 @@ packages use the cross C compiler from `pkgs.stdenv.cc`.
 
 The resolver runs on the evaluating machine. When that is not the build
 platform, for example building Linux packages from a Mac through a remote
-builder, pass `evalPkgs` for the evaluating machine's system.
+builder, pass `evalPkgs` for the evaluating machine's system; its tool and its
+Go then run the resolver (pass `evalGo` to pick a different Go of the same
+version).
 
 ## Monorepo layout
 
@@ -487,7 +501,7 @@ non-zero. Nix then reports that the program failed.
 | `replace` target outside `src` | Names the directive and the resolved path. |
 | Pre-seeded path differs from the computed one | Names the module and says the module cache changed. |
 | `nix` missing or `nix store add` fails | Warning only; the fetch derivation covers it. |
-| `evalPkgs.go.version` differs from `go.version` | `mkGoEnv` assertion. |
+| The evaluation-time Go (`evalGo`, else `evalPkgs.go`, else `go`) differs in version from `go` | `mkGoEnv` assertion naming `evalGo` and both versions. |
 
 ## Not in this version
 
