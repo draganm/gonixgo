@@ -12,7 +12,21 @@
       eachSystem = f:
         nixpkgs.lib.genAttrs (import systems)
         (system: f system nixpkgs.legacyPackages.${system});
+      mkGoEnv = import ./nix/mk-go-env.nix;
     in {
+
+      lib = { inherit mkGoEnv; };
+
+      packages = eachSystem (system: pkgs: rec {
+        gonixgo = (mkGoEnv { inherit pkgs; }).tool;
+        default = gonixgo;
+      });
+
+      # Anything that needs builtins.exec lives under legacyPackages, which
+      # `nix flake check` and `nix flake show` do not evaluate.
+      legacyPackages = eachSystem (system: pkgs: {
+        goEnv = mkGoEnv { inherit pkgs; };
+      });
 
       devShells = eachSystem (system: pkgs: {
         default = pkgs.mkShell {
