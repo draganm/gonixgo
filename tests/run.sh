@@ -45,6 +45,20 @@ check_modinfo() {
   echo "ok: $1: $2 module info matches go build"
 }
 
+# check_distinct_build_ids <fixture> <binary> <binary>
+# The linker derives LC_UUID and the ELF build ID from the Go build ID, so
+# two binaries must not share one.
+check_distinct_build_ids() {
+  local out a b
+  out="$(build "fixtures.$1")"
+  a="$(grep -a -o 'Go build ID: "[^"]*"' "$out/bin/$2" | head -1)" || true
+  b="$(grep -a -o 'Go build ID: "[^"]*"' "$out/bin/$3" | head -1)" || true
+  [ -n "$a" ] || fail "$1: $2 has no Go build ID"
+  [ -n "$b" ] || fail "$1: $3 has no Go build ID"
+  [ "$a" != "$b" ] || fail "$1: $2 and $3 share the build ID $a"
+  echo "ok: $1: $2 and $3 have distinct build IDs"
+}
+
 # check_incremental <fixture> <file to append to> <what must change>
 # Evaluates the fixture from two copies that differ in one file and lists
 # the nodes whose derivations differ: package import paths, then bin:<name>,
@@ -102,6 +116,7 @@ check_run asm-embed asmembed "3 hi [extra.txt index.html] 1.2.3"
 check_run asm-embed second "second"
 check_modinfo asm-embed asmembed .
 check_modinfo asm-embed second ./cmd/second
+check_distinct_build_ids asm-embed asmembed second
 
 # A package edit rebuilds it, its importers and the link. Nothing else.
 check_incremental hello-deps internal/greet/greet.go \

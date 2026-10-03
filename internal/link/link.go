@@ -3,6 +3,9 @@
 package link
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -64,13 +67,25 @@ func Run(m Manifest, outDir, workDir string) error {
 	if tc.PIE() {
 		mode = "pie"
 	}
-	args = append(args, "-buildmode="+mode, "-buildid=redacted")
+	args = append(args, "-buildmode="+mode, "-buildid="+buildID(m))
 	args = append(args, ldflags...)
 	args = append(args, m.Main)
 
 	// An empty GOROOT keeps the toolchain's path out of the binary, as
 	// go build -trimpath does.
 	return tc.Tool(workDir, []string{"GOROOT="}, "link", args...)
+}
+
+// buildID derives the binary's build ID from its manifest. The linker
+// turns the build ID into the Mach-O LC_UUID and the ELF GNU build ID, so a
+// constant would give every binary the same identity. In a Nix build the
+// manifest names the store path of every input, so the ID changes exactly
+// when an input does and stays reproducible.
+func buildID(m Manifest) string {
+	// A struct of strings and string slices always marshals.
+	data, _ := json.Marshal(m)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:20])
 }
 
 // SplitFlags splits each element the way `go build -ldflags` splits its

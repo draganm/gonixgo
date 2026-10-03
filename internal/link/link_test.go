@@ -97,13 +97,13 @@ func TestCompileLinkRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := Run(Manifest{
+	m := Manifest{
 		Go: goBin, BinName: "app", Main: filepath.Join(mainOut, "pkg.a"),
 		Importcfgs: []string{std, filepath.Join(mainOut, "importcfg"), filepath.Join(libOut, "importcfg")},
 		Modinfo:    modinfo,
 		LDFlags:    []string{"-X 'main.version=1 2'"},
-	}, binOut, t.TempDir())
-	if err != nil {
+	}
+	if err := Run(m, binOut, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -132,6 +132,37 @@ func TestCompileLinkRun(t *testing.T) {
 	}
 	if bytes.Contains(data, []byte(src)) {
 		t.Errorf("binary contains the source directory %s", src)
+	}
+	if id := buildID(m); !bytes.Contains(data, []byte(id)) {
+		t.Errorf("binary does not contain the build ID %s", id)
+	}
+}
+
+func TestBuildID(t *testing.T) {
+	base := Manifest{
+		Go: "/go", BinName: "app", Main: "/main/pkg.a",
+		Importcfgs: []string{"/std/importcfg"}, Modinfo: "path\texample.com/app\n",
+		LDFlags: []string{"-s"},
+	}
+	same := base
+	same.Importcfgs = append([]string(nil), base.Importcfgs...)
+	if buildID(base) != buildID(same) {
+		t.Error("buildID differs for equal manifests")
+	}
+	if got := len(buildID(base)); got != 40 {
+		t.Errorf("len(buildID) = %d, want 40", got)
+	}
+	for name, change := range map[string]func(*Manifest){
+		"BinName": func(m *Manifest) { m.BinName = "other" },
+		"Main":    func(m *Manifest) { m.Main = "/other/pkg.a" },
+		"LDFlags": func(m *Manifest) { m.LDFlags = []string{"-w"} },
+		"Modinfo": func(m *Manifest) { m.Modinfo = "path\texample.com/other\n" },
+	} {
+		m := base
+		change(&m)
+		if buildID(m) == buildID(base) {
+			t.Errorf("buildID does not change with %s", name)
+		}
 	}
 }
 
