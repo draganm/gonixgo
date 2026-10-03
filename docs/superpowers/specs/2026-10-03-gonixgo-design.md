@@ -78,13 +78,16 @@ Non-flake use: `import gonixgo { inherit pkgs; }` returns the same set as
 |---|---|---|
 | `pkgs` | required | The nixpkgs instance. Target platform is `pkgs.stdenv.hostPlatform`. |
 | `go` | `pkgs.buildPackages.go` | Toolchain used inside derivations. |
-| `evalPkgs` | `pkgs.buildPackages` | Package set whose tool and Go run on the evaluating machine. Override only when the evaluating machine differs from the build platform. |
+| `evalPkgs` | `null` | Package set whose tool runs on the evaluating machine; `null` means `pkgs.buildPackages`. Override only when the evaluating machine differs from the build platform. |
+| `evalGo` | `null` | Go that runs `go list` on the evaluating machine; `null` means `evalPkgs.go` when `evalPkgs` is given, otherwise `go`. |
 
 Returns `{ buildGoApplication, tool, go, stdlib, builders }`. `stdlib` is a
 function from the cgo setting to the standard-library derivation.
 
-`evalPkgs.go.version` must equal `go.version`; `mkGoEnv` asserts this so the
-file lists resolved at evaluation match what is compiled.
+The evaluation-time Go's version must equal `go.version`; `mkGoEnv` asserts
+this so the file lists resolved at evaluation match what is compiled. Passing
+only `go`, for example `go = pkgs.go_1_25`, therefore works: the same Go
+resolves and builds.
 
 ### `buildGoApplication`
 
@@ -124,8 +127,10 @@ dependency hash.
 | `test` | in a derivation | Compiles, links and runs one package's tests. |
 | `fetch` | in a fixed-output derivation | Fallback module download. |
 
-Build-time subcommands read their manifest from the `manifest` environment
-variable, set by the builder functions with `builtins.toJSON`.
+Build-time subcommands read a manifest written by the builder functions.
+`compile`, `link` and `test` derivations use `__structuredAttrs`, so the
+manifest arrives in the attrs file and its size is not bounded by the
+environment; `fetch` reads it from the `manifest` environment variable.
 
 ### 2. The static Nix library
 
@@ -144,26 +149,32 @@ b: rec {
   cgoEnabled = true;
 
   modules."github.com/fatih/color@v1.18.0" = b.fetchModule {
+    name = "gomod-github.com-fatih-color-v1.18.0";
     path = "github.com/fatih/color";
     version = "v1.18.0";
     hash = "sha256-pP5y…";
   };
 
   packages."github.com/fatih/color" = b.compile {
+    name = "gopkg-github.com-fatih-color-v1.18.0";
     importPath = "github.com/fatih/color";
     src = modules."github.com/fatih/color@v1.18.0";
     subdir = "";
-    module = "github.com/fatih/color@v1.18.0";
+    module = "github.com/fatih/color";
+    trimTo = "github.com/fatih/color@v1.18.0";
     lang = "go1.17";
+    isMain = false;
     goFiles = [ "color.go" "doc.go" ];
     deps = [ packages."github.com/mattn/go-isatty" ];
   };
 
   packages."example.com/app" = b.compile {
+    name = "golocal-example.com-app";
     importPath = "example.com/app";
-    src = b.localDir { dir = "."; files = [ "main.go" ]; };
+    src = b.localDir { name = "gosrc-example.com-app"; files = [ "main.go" ]; };
     subdir = "";
     module = "example.com/app";
+    trimTo = "example.com/app";
     lang = "go1.24";
     isMain = true;
     goFiles = [ "main.go" ];
@@ -171,15 +182,18 @@ b: rec {
   };
 
   bins.app = b.link {
+    name = "gobin-app";
+    binName = "app";
     main = packages."example.com/app";
     deps = [ /* transitive closure, standard library excluded */ ];
     modinfo = "…";
+    godebug = "…";
   };
 
   tests."example.com/app" = b.test {
     importPath = "example.com/app";
     src = b.localDir {
-      dir = ".";
+      name = "gosrc-test-example.com-app";
       files = [ "main.go" "main_test.go" "cli_test.go" ];
       trees = [ "testdata" ];
     };
@@ -194,6 +208,11 @@ b: rec {
   };
 }
 ```
+
+Derivation names are computed by the tool, so name sanitising lives in one
+place. `module` is the owning module's path, used to look up
+`packageOverrides`; `trimTo` is what `-trimpath` rewrites the source directory
+to. File lists in `localDir` are relative to the source root.
 
 Fields a `compile` node may carry beyond those shown: `sFiles`, `cgoFiles`,
 `cFiles`, `cxxFiles`, `hFiles`, `sysoFiles`, `embed` (pattern to file list),
@@ -246,12 +265,19 @@ and builders cannot drift and carries no version number.
 
 ### Environment for `go list`
 
-Set by the tool: `GOFLAGS=-mod=readonly`, `GOWORK=off`, `GOTOOLCHAIN=local`,
-`GOOS`, `GOARCH`, `CGO_ENABLED`, and the build tags.
+Set by the tool: `GOENV=off`, `GOFLAGS=-mod=readonly`, `GOWORK=off`,
+`GOTOOLCHAIN=local`, `GOOS`, `GOARCH`, `CGO_ENABLED`, and the build tags. The
+caller's build configuration (`GOOS`, `GOARCH`, `CGO_ENABLED`, the
+architecture level keys, `GOEXPERIMENT`, `GOFIPS140`, `GO111MODULE`, `GOROOT`)
+is dropped, so the same source resolves to the same graph in every shell, as
+the builders see it.
 
-Inherited from the caller: `HOME`, `PATH`, `GOMODCACHE`, `GOPROXY`,
-`GOPRIVATE`, `GONOSUMDB`, `GOSUMDB`, `NETRC`, and the Go env file. Go
-downloads missing modules and verifies them against `go.sum`.
+Carried over from the caller: where modules come from. The tool first runs
+`go env` with the caller's environment and Go env file for `GOPROXY`,
+`GOPRIVATE`, `GONOPROXY`, `GONOSUMDB`, `GOSUMDB`, `GOINSECURE`, `GOVCS`,
+`GOMODCACHE`, `GOPATH` and `GOAUTH`, and sets those values explicitly.
+`HOME`, `PATH`, `NETRC` and the proxy variables are inherited. Go downloads
+missing modules and verifies them against `go.sum`.
 
 ### What evaluation requires
 
@@ -260,7 +286,7 @@ downloads missing modules and verifies them against `go.sum`.
 - Network access, or a module cache that already holds the project's modules.
 - Import-from-derivation allowed (the default), since the tool and Go are
   built during evaluation.
-- The evaluating machine must be able to run `evalPkgs`' tool and Go.
+- The evaluating machine must be able to run the evaluation-time tool and Go.
 
 ## Module hashing and pre-seeding
 
@@ -345,7 +371,9 @@ use stdenv.
 
 Writes the link importcfg (standard library, the main package, its transitive
 dependencies, and a `modinfo` line), then runs `go tool link` with the caller's
-`ldflags`. The C toolchain is available when cgo is enabled, and the linker
+`ldflags`. The build ID is derived from a hash of the link manifest, which
+names every input's store path: the linker turns it into the Mach-O `LC_UUID`
+and the ELF build ID, so each binary gets its own, reproducibly. The C toolchain is available when cgo is enabled, and the linker
 chooses internal or external linking as it does under `go build`.
 
 The module info matches `go build -trimpath`: `path`, `mod`, one `dep` line per
@@ -361,9 +389,9 @@ every `tests.*` derivation, so a failing test fails the build.
 
 ## Local sources
 
-`b.localDir { dir; files; trees ? [ ]; }` is a `builtins.path` copy of `src`
+`b.localDir { name; files; trees ? [ ]; }` is a `builtins.path` copy of `src`
 filtered to exactly the listed files, the directories leading to them, and
-everything under each listed tree.
+everything under each listed tree. Paths are relative to `src`.
 
 A compile node lists the files `go list` reported for the package, including
 embed targets in subdirectories. Editing a neighbouring package, or a file in
@@ -444,7 +472,9 @@ packages use the cross C compiler from `pkgs.stdenv.cc`.
 
 The resolver runs on the evaluating machine. When that is not the build
 platform, for example building Linux packages from a Mac through a remote
-builder, pass `evalPkgs` for the evaluating machine's system.
+builder, pass `evalPkgs` for the evaluating machine's system; its tool and its
+Go then run the resolver (pass `evalGo` to pick a different Go of the same
+version).
 
 ## Monorepo layout
 
@@ -464,14 +494,14 @@ non-zero. Nix then reports that the program failed.
 
 | Situation | Behaviour |
 |---|---|
-| `builtins.exec` unavailable | `mkGoEnv` throws, naming `allow-unsafe-native-code-during-evaluation` and the three ways to set it. |
+| `builtins.exec` unavailable | `buildGoApplication` throws, naming `allow-unsafe-native-code-during-evaluation` and the three ways to set it. `mkGoEnv` itself does not need `exec`. |
 | `go.sum` missing entries | Reports Go's message and suggests `go mod tidy`. |
 | Packages that fail to load | `go list -e` errors are collected and all reported. |
 | Module download fails | Reports Go's message with the module and version. |
 | `replace` target outside `src` | Names the directive and the resolved path. |
 | Pre-seeded path differs from the computed one | Names the module and says the module cache changed. |
 | `nix` missing or `nix store add` fails | Warning only; the fetch derivation covers it. |
-| `evalPkgs.go.version` differs from `go.version` | `mkGoEnv` assertion. |
+| The evaluation-time Go (`evalGo`, else `evalPkgs.go`, else `go`) differs in version from `go` | `mkGoEnv` assertion naming `evalGo` and both versions. |
 
 ## Not in this version
 
@@ -520,17 +550,21 @@ Each fixture asserts:
 flake.nix            lib.mkGoEnv, packages.gonixgo, dev shell
 default.nix          { pkgs }: non-flake entry point
 go.mod               module with no requirements
-cmd/gonixgo/         main: subcommand dispatch
+cmd/gonixgo/         main: subcommand dispatch, manifest loading
 internal/golist/     running and decoding go list
 internal/graph/      classification, closures, the graph model
+internal/modinfo/    the module info go build embeds
 internal/nar/        NAR serialisation and hashing
 internal/storepath/  fixed-output store paths, name sanitising
-internal/modcache/   hash cache, pre-seeding
+internal/modcache/   go.sum, hash cache, pre-seeding
 internal/emit/       graph to Nix
+internal/resolve/    the evaluation-time pipeline
+internal/gotool/     locating and running compile, asm, link
 internal/compile/    compile, assembly, embeds, cgo
-internal/link/       importcfg, module info, link
+internal/link/       importcfg, link
+internal/fetch/      the fallback module download
 internal/gotest/     test variants, test main, runner
-nix/                 mk-go-env.nix, stdlib.nix, and one file per builder
+nix/                 mk-go-env.nix, tool.nix, stdlib.nix, builders.nix, build-go-application.nix
 tests/fixtures/      integration fixtures
 tests/run.sh         integration driver
 ```
