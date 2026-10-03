@@ -116,6 +116,22 @@ func TestRunCgoDisabled(t *testing.T) {
 	}
 }
 
+func TestRunIgnoresCallerBuildConfiguration(t *testing.T) {
+	a := Args{Src: testutil.WriteTree(t, appFiles), ModRoot: ".", SubPackages: []string{"."}}
+	clean, err := run(t, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.HostileGoEnv(t)
+	hostile, err := run(t, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostile != clean {
+		t.Fatalf("output in a hostile environment:\n%s\nin a clean one:\n%s", hostile, clean)
+	}
+}
+
 func TestPatterns(t *testing.T) {
 	tests := []struct {
 		in   []string

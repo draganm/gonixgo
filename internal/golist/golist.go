@@ -60,20 +60,46 @@ type Package struct {
 
 // Options says how to run the go command.
 type Options struct {
-	Go         string   // path to the go binary
-	Dir        string   // working directory, the module root
-	GOOS       string   // "" keeps the environment's
-	GOARCH     string   // "" keeps the environment's
-	CgoEnabled string   // "0", "1", or "" for Go's default
-	Tags       []string // build tags
+	Go         string            // path to the go binary
+	Dir        string            // working directory, the module root
+	GOOS       string            // "" for the host's
+	GOARCH     string            // "" for the host's
+	CgoEnabled string            // "0", "1", or "" for Go's default
+	Tags       []string          // build tags
+	ModuleEnv  map[string]string // where modules come from, see ModuleEnv
 	Stderr     io.Writer
 }
 
-// environ is the caller's environment with the variables that decide the
-// package graph pinned. GOPROXY, GOPRIVATE, GOMODCACHE, NETRC and the Go
-// env file are left alone so private modules resolve as they do for the
-// user.
+// buildConfig are the variables that change what gets built. The builders
+// run with GOENV=off and none of them set, so go list must not see the
+// caller's values either, or the graph and the module info would describe
+// a build that does not happen.
+var buildConfig = []string{
+	"GOOS", "GOARCH", "CGO_ENABLED",
+	"GO386", "GOAMD64", "GOARM", "GOARM64", "GOMIPS", "GOMIPS64", "GOPPC64", "GORISCV64", "GOWASM",
+	"GOEXPERIMENT", "GOFIPS140", "GO111MODULE", "GOROOT",
+}
+
+// moduleKeys are the settings that say where modules come from.
+var moduleKeys = []string{
+	"GOPROXY", "GOPRIVATE", "GONOPROXY", "GONOSUMDB", "GOSUMDB", "GOINSECURE", "GOVCS",
+	"GOMODCACHE", "GOPATH", "GOAUTH",
+}
+
+// environ is the environment for the go invocations that decide the
+// package graph. It is hermetic in the build configuration: the Go env file
+// is off (an empty variable would not override it) and the caller's
+// buildConfig values are dropped, so the same source resolves to the same
+// graph in every shell. Where modules come from is carried over explicitly
+// through ModuleEnv, so private modules resolve as they do for the user.
+// NETRC, the HTTP proxy variables, HOME, PATH and SSH_AUTH_SOCK stay
+// inherited because downloads need them and they do not change the graph.
 func (o Options) environ() []string {
+	return o.environWith(map[string]string{"GOENV": "off"})
+}
+
+// environWith is environ without GOENV=off, plus extra.
+func (o Options) environWith(extra map[string]string) []string {
 	set := map[string]string{
 		"GOFLAGS":     "-mod=readonly",
 		"GOWORK":      "off",
@@ -81,6 +107,12 @@ func (o Options) environ() []string {
 		// os/exec only sets PWD when Env is nil. go derives package
 		// directories from it, so it must name Dir.
 		"PWD": o.Dir,
+	}
+	for k, v := range extra {
+		set[k] = v
+	}
+	for k, v := range o.ModuleEnv {
+		set[k] = v
 	}
 	if o.GOOS != "" {
 		set["GOOS"] = o.GOOS
@@ -91,10 +123,14 @@ func (o Options) environ() []string {
 	if o.CgoEnabled != "" {
 		set["CGO_ENABLED"] = o.CgoEnabled
 	}
+	drop := map[string]bool{}
+	for _, k := range buildConfig {
+		drop[k] = true
+	}
 	var env []string
 	for _, kv := range os.Environ() {
 		key, _, _ := strings.Cut(kv, "=")
-		if _, pinned := set[key]; !pinned {
+		if _, pinned := set[key]; !pinned && !drop[key] {
 			env = append(env, kv)
 		}
 	}
@@ -102,6 +138,17 @@ func (o Options) environ() []string {
 		env = append(env, k+"="+v)
 	}
 	return env
+}
+
+// ModuleEnv reports where modules come from for the caller, in dir: the
+// shell's values and the Go env file's both count. Pass the result as
+// Options.ModuleEnv. The caller's build configuration is still dropped,
+// because go refuses to run at all with, say, an unknown GOEXPERIMENT.
+func ModuleEnv(goBin, dir string, stderr io.Writer) (map[string]string, error) {
+	o := Options{Go: goBin, Dir: dir, Stderr: stderr}
+	cmd := o.command(append([]string{"env", "-json"}, moduleKeys...)...)
+	cmd.Env = o.environWith(nil)
+	return decodeEnv(cmd)
 }
 
 func (o Options) command(args ...string) *exec.Cmd {
@@ -151,7 +198,11 @@ func Decode(r io.Reader) ([]Package, error) {
 
 // Env runs `go env -json` for keys.
 func Env(o Options, keys ...string) (map[string]string, error) {
-	out, err := o.command(append([]string{"env", "-json"}, keys...)...).Output()
+	return decodeEnv(o.command(append([]string{"env", "-json"}, keys...)...))
+}
+
+func decodeEnv(cmd *exec.Cmd) (map[string]string, error) {
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("go env: %w", err)
 	}

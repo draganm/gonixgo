@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -56,4 +57,30 @@ func StdImportcfg(t *testing.T, goBin string) string {
 		t.Fatal(err)
 	}
 	return file
+}
+
+// HostileGoEnv sets, for the rest of the test, environment variables and a
+// Go env file that would change the package graph if they leaked into it.
+// It returns the host architecture's level key ("" when the host has none
+// HostileGoEnv knows).
+func HostileGoEnv(t *testing.T) string {
+	t.Helper()
+	envFile := filepath.Join(t.TempDir(), "goenv")
+	if err := os.WriteFile(envFile, []byte("CGO_ENABLED=0\nGOFLAGS=-mod=mod\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", envFile)
+	t.Setenv("CGO_ENABLED", "0")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	t.Setenv("GOWORK", "/nonexistent/go.work")
+	t.Setenv("GOEXPERIMENT", "nosuchexperiment")
+	switch runtime.GOARCH {
+	case "arm64":
+		t.Setenv("GOARM64", "v8.1,lse")
+		return "GOARM64"
+	case "amd64":
+		t.Setenv("GOAMD64", "v3")
+		return "GOAMD64"
+	}
+	return ""
 }

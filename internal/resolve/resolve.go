@@ -50,13 +50,19 @@ func Run(a Args, opts Options, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	dir := filepath.Join(src, filepath.FromSlash(a.ModRoot))
+	moduleEnv, err := golist.ModuleEnv(a.Go, dir, opts.Stderr)
+	if err != nil {
+		return err
+	}
 	o := golist.Options{
-		Go:     a.Go,
-		Dir:    filepath.Join(src, filepath.FromSlash(a.ModRoot)),
-		GOOS:   a.GOOS,
-		GOARCH: a.GOARCH,
-		Tags:   a.Tags,
-		Stderr: opts.Stderr,
+		Go:        a.Go,
+		Dir:       dir,
+		GOOS:      a.GOOS,
+		GOARCH:    a.GOARCH,
+		Tags:      a.Tags,
+		ModuleEnv: moduleEnv,
+		Stderr:    opts.Stderr,
 	}
 	if a.CgoEnabled != nil {
 		o.CgoEnabled = "0"

@@ -1,6 +1,8 @@
 package golist
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -126,5 +128,70 @@ func TestEnv(t *testing.T) {
 	}
 	if env["GOOS"] != "plan9" || env["GOARCH"] != "amd64" || !strings.HasPrefix(env["GOVERSION"], "go") {
 		t.Fatalf("env = %v", env)
+	}
+}
+
+func TestEnvIgnoresCallerBuildConfiguration(t *testing.T) {
+	goBin := testutil.Go(t)
+	dir := testutil.WriteTree(t, appFiles)
+	o := Options{Go: goBin, Dir: dir}
+	keys := []string{"CGO_ENABLED", "GOFLAGS", "GOWORK", "GOTOOLCHAIN", "GOEXPERIMENT"}
+	clean, err := Env(o, append(keys, "GOARM64", "GOAMD64")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if archKey := testutil.HostileGoEnv(t); archKey != "" {
+		keys = append(keys, archKey)
+	}
+	hostile, err := Env(o, keys...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range keys {
+		if hostile[k] != clean[k] {
+			t.Errorf("%s = %q in a hostile environment, %q in a clean one", k, hostile[k], clean[k])
+		}
+	}
+	for k, want := range map[string]string{"GOFLAGS": "-mod=readonly", "GOWORK": "off", "GOTOOLCHAIN": "local"} {
+		if hostile[k] != want {
+			t.Errorf("%s = %q, want %q", k, hostile[k], want)
+		}
+	}
+	if _, err := List(o, "."); err != nil {
+		t.Errorf("List in a hostile environment: %v", err)
+	}
+}
+
+func TestModuleEnvCarriesModuleSources(t *testing.T) {
+	goBin := testutil.Go(t)
+	dir := testutil.WriteTree(t, appFiles)
+	envFile := filepath.Join(t.TempDir(), "goenv")
+	if err := os.WriteFile(envFile, []byte("GOPROXY=https://proxy.example.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", envFile)
+	t.Setenv("GOPRIVATE", "example.com/private")
+	t.Setenv("GOPROXY", "")
+	os.Unsetenv("GOPROXY")
+
+	me, err := ModuleEnv(goBin, dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"GOPRIVATE": "example.com/private", "GOPROXY": "https://proxy.example.com"}
+	for k, v := range want {
+		if me[k] != v {
+			t.Errorf("ModuleEnv %s = %q, want %q", k, me[k], v)
+		}
+	}
+	env, err := Env(Options{Go: goBin, Dir: dir, ModuleEnv: me}, "GOPRIVATE", "GOPROXY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range want {
+		if env[k] != v {
+			t.Errorf("Env with ModuleEnv: %s = %q, want %q", k, env[k], v)
+		}
 	}
 }
