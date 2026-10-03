@@ -72,7 +72,7 @@ func main() {
 `,
 }
 
-const modinfo = "path\texample.com/app\nmod\texample.com/app\t(devel)\t\nbuild\t-trimpath=true\n"
+const testModinfo = "path\texample.com/app\nmod\texample.com/app\t(devel)\t\nbuild\t-trimpath=true\n"
 
 func TestCompileLinkRun(t *testing.T) {
 	goBin := testutil.Go(t)
@@ -100,7 +100,7 @@ func TestCompileLinkRun(t *testing.T) {
 	m := Manifest{
 		Go: goBin, BinName: "app", Main: filepath.Join(mainOut, "pkg.a"),
 		Importcfgs: []string{std, filepath.Join(mainOut, "importcfg"), filepath.Join(libOut, "importcfg")},
-		Modinfo:    modinfo,
+		Modinfo:    testModinfo,
 		LDFlags:    []string{"-X 'main.version=1 2'"},
 	}
 	if err := Run(m, binOut, t.TempDir()); err != nil {

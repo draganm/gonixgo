@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/draganm/gonixgo/internal/gotool"
-	modinfopkg "github.com/draganm/gonixgo/internal/modinfo"
+	"github.com/draganm/gonixgo/internal/modinfo"
 )
 
 // Manifest describes one link. The link builder in nix/builders.nix
@@ -47,7 +47,7 @@ func Run(m Manifest, outDir, workDir string) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(f, "modinfo %q\n", modinfopkg.Wrap(m.Modinfo))
+	_, err = fmt.Fprintf(f, "modinfo %q\n", modinfo.Wrap(m.Modinfo))
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
