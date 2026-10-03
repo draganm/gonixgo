@@ -24,9 +24,12 @@
 
       # Anything that needs builtins.exec lives under legacyPackages, which
       # `nix flake check` and `nix flake show` do not evaluate.
-      legacyPackages = eachSystem (system: pkgs: {
-        goEnv = mkGoEnv { inherit pkgs; };
-      });
+      legacyPackages = eachSystem (system: pkgs:
+        let goEnv = mkGoEnv { inherit pkgs; };
+        in {
+          inherit goEnv;
+          fixtures = import ./tests/fixtures.nix { inherit goEnv; };
+        });
 
       devShells = eachSystem (system: pkgs: {
         default = pkgs.mkShell {
