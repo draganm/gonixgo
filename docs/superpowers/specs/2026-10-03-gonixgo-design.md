@@ -124,8 +124,10 @@ dependency hash.
 | `test` | in a derivation | Compiles, links and runs one package's tests. |
 | `fetch` | in a fixed-output derivation | Fallback module download. |
 
-Build-time subcommands read their manifest from the `manifest` environment
-variable, set by the builder functions with `builtins.toJSON`.
+Build-time subcommands read a manifest written by the builder functions.
+`compile`, `link` and `test` derivations use `__structuredAttrs`, so the
+manifest arrives in the attrs file and its size is not bounded by the
+environment; `fetch` reads it from the `manifest` environment variable.
 
 ### 2. The static Nix library
 
@@ -144,26 +146,32 @@ b: rec {
   cgoEnabled = true;
 
   modules."github.com/fatih/color@v1.18.0" = b.fetchModule {
+    name = "gomod-github.com-fatih-color-v1.18.0";
     path = "github.com/fatih/color";
     version = "v1.18.0";
     hash = "sha256-pP5y…";
   };
 
   packages."github.com/fatih/color" = b.compile {
+    name = "gopkg-github.com-fatih-color-v1.18.0";
     importPath = "github.com/fatih/color";
     src = modules."github.com/fatih/color@v1.18.0";
     subdir = "";
-    module = "github.com/fatih/color@v1.18.0";
+    module = "github.com/fatih/color";
+    trimTo = "github.com/fatih/color@v1.18.0";
     lang = "go1.17";
+    isMain = false;
     goFiles = [ "color.go" "doc.go" ];
     deps = [ packages."github.com/mattn/go-isatty" ];
   };
 
   packages."example.com/app" = b.compile {
+    name = "golocal-example.com-app";
     importPath = "example.com/app";
-    src = b.localDir { dir = "."; files = [ "main.go" ]; };
+    src = b.localDir { name = "gosrc-example.com-app"; files = [ "main.go" ]; };
     subdir = "";
     module = "example.com/app";
+    trimTo = "example.com/app";
     lang = "go1.24";
     isMain = true;
     goFiles = [ "main.go" ];
@@ -171,15 +179,18 @@ b: rec {
   };
 
   bins.app = b.link {
+    name = "gobin-app";
+    binName = "app";
     main = packages."example.com/app";
     deps = [ /* transitive closure, standard library excluded */ ];
     modinfo = "…";
+    godebug = "…";
   };
 
   tests."example.com/app" = b.test {
     importPath = "example.com/app";
     src = b.localDir {
-      dir = ".";
+      name = "gosrc-test-example.com-app";
       files = [ "main.go" "main_test.go" "cli_test.go" ];
       trees = [ "testdata" ];
     };
@@ -194,6 +205,11 @@ b: rec {
   };
 }
 ```
+
+Derivation names are computed by the tool, so name sanitising lives in one
+place. `module` is the owning module's path, used to look up
+`packageOverrides`; `trimTo` is what `-trimpath` rewrites the source directory
+to. File lists in `localDir` are relative to the source root.
 
 Fields a `compile` node may carry beyond those shown: `sFiles`, `cgoFiles`,
 `cFiles`, `cxxFiles`, `hFiles`, `sysoFiles`, `embed` (pattern to file list),
@@ -361,9 +377,9 @@ every `tests.*` derivation, so a failing test fails the build.
 
 ## Local sources
 
-`b.localDir { dir; files; trees ? [ ]; }` is a `builtins.path` copy of `src`
+`b.localDir { name; files; trees ? [ ]; }` is a `builtins.path` copy of `src`
 filtered to exactly the listed files, the directories leading to them, and
-everything under each listed tree.
+everything under each listed tree. Paths are relative to `src`.
 
 A compile node lists the files `go list` reported for the package, including
 embed targets in subdirectories. Editing a neighbouring package, or a file in
@@ -464,7 +480,7 @@ non-zero. Nix then reports that the program failed.
 
 | Situation | Behaviour |
 |---|---|
-| `builtins.exec` unavailable | `mkGoEnv` throws, naming `allow-unsafe-native-code-during-evaluation` and the three ways to set it. |
+| `builtins.exec` unavailable | `buildGoApplication` throws, naming `allow-unsafe-native-code-during-evaluation` and the three ways to set it. `mkGoEnv` itself does not need `exec`. |
 | `go.sum` missing entries | Reports Go's message and suggests `go mod tidy`. |
 | Packages that fail to load | `go list -e` errors are collected and all reported. |
 | Module download fails | Reports Go's message with the module and version. |
@@ -520,17 +536,21 @@ Each fixture asserts:
 flake.nix            lib.mkGoEnv, packages.gonixgo, dev shell
 default.nix          { pkgs }: non-flake entry point
 go.mod               module with no requirements
-cmd/gonixgo/         main: subcommand dispatch
+cmd/gonixgo/         main: subcommand dispatch, manifest loading
 internal/golist/     running and decoding go list
 internal/graph/      classification, closures, the graph model
+internal/modinfo/    the module info go build embeds
 internal/nar/        NAR serialisation and hashing
 internal/storepath/  fixed-output store paths, name sanitising
-internal/modcache/   hash cache, pre-seeding
+internal/modcache/   go.sum, hash cache, pre-seeding
 internal/emit/       graph to Nix
+internal/resolve/    the evaluation-time pipeline
+internal/gotool/     locating and running compile, asm, link
 internal/compile/    compile, assembly, embeds, cgo
-internal/link/       importcfg, module info, link
+internal/link/       importcfg, link
+internal/fetch/      the fallback module download
 internal/gotest/     test variants, test main, runner
-nix/                 mk-go-env.nix, stdlib.nix, and one file per builder
+nix/                 mk-go-env.nix, tool.nix, stdlib.nix, builders.nix, build-go-application.nix
 tests/fixtures/      integration fixtures
 tests/run.sh         integration driver
 ```
