@@ -264,3 +264,41 @@ func TestCompileAndLinkWithTheRealCompiler(t *testing.T) {
 		t.Errorf("a link with an undefined symbol succeeded:\n%s", out)
 	}
 }
+
+// A compiler records its working directory in debug information, and
+// takes it from $PWD when that names the directory. Only then does a path
+// reached through a symlink match the prefix map written for it.
+func TestRunsWithPWDOfTheirDirectory(t *testing.T) {
+	root := testutil.WriteTree(t, map[string]string{"real/keep": ""})
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(filepath.Join(root, "real"), link); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(root, "pwd")
+	bin := filepath.Join(root, "cc")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf %s \"$PWD\" >\""+record+"\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := New([]string{bin}, Target{GOOS: "linux", GOARCH: "arm64"}, append(os.Environ(), "PWD=/somewhere/else"), nil, nil, root)
+	recorded := func() string {
+		t.Helper()
+		data, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	if err := c.Compile(Job{Dir: link, IncDir: ".", File: "a.c", Obj: "a.o"}, root, PathMap{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorded(); got != link {
+		t.Errorf("compile ran with PWD=%s, want its directory %s", got, link)
+	}
+	if _, err := c.Link(link, ".", root, "out", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorded(); got != link {
+		t.Errorf("link ran with PWD=%s, want its directory %s", got, link)
+	}
+}

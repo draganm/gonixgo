@@ -66,10 +66,9 @@ func (c *Compiler) Supports(flag string) bool {
 		args = append(args, "-c")
 	}
 	args = append(args, "-x", "c", "-", "-o", os.DevNull)
-	cmd := exec.Command(c.cmd[0], args...)
-	cmd.Dir = c.probeDir
+	cmd := c.command(c.probeDir, append(slices.Clone(c.cmd[:1]), args...))
 	// The words looked for are English.
-	cmd.Env = append(slices.Clone(c.env), "LC_ALL=C")
+	cmd.Env = append(cmd.Env, "LC_ALL=C")
 	out, _ := cmd.CombinedOutput()
 	ok := true
 	for _, word := range unsupportedWords {
@@ -164,9 +163,7 @@ func (c *Compiler) Compile(j Job, workDir string, src PathMap) error {
 		args = append(args, "-frandom-seed="+j.Seed)
 	}
 	args = append(args, "-o", j.Obj, "-c", j.File)
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Dir = j.Dir
-	cmd.Env = c.env
+	cmd := c.command(j.Dir, args)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -182,10 +179,19 @@ func (c *Compiler) Link(dir, incDir, workDir, out string, objs, ldflags []string
 	args := append(c.Prefix(incDir, workDir), "-o", out)
 	args = append(args, objs...)
 	args = append(args, ldflags...)
+	return c.command(dir, args).CombinedOutput()
+}
+
+// command prepares a run of args in dir. A compiler records its working
+// directory in debug information and takes it from $PWD when that names
+// the directory; only then does a directory reached through a symlink
+// match the prefix map written for it. os/exec sets PWD only when it also
+// chooses the environment.
+func (c *Compiler) command(dir string, args []string) *exec.Cmd {
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = dir
-	cmd.Env = c.env
-	return cmd.CombinedOutput()
+	cmd.Env = append(slices.Clone(c.env), "PWD="+dir)
+	return cmd
 }
 
 // ArchArgs returns the flags that select the target architecture.
