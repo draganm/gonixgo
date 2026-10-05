@@ -211,6 +211,38 @@ check_override_typo() {
   esac
 }
 
+# An entry that no cgo package takes changes nothing, so it is most likely
+# a mistake. It is a warning, since the key may match on another platform.
+check_override_unmatched() {
+  local msg
+  msg="$(cgo_fixture_with '{
+      "example.com/cgofix/internal/latee".buildInputs = [ ];
+      "example.com/cgofix/internal/pure".buildInputs = [ ];
+      "example.com/cgofix/internal/lz4".buildInputs = [ pkgs.lz4 ];
+    }' 'app.drvPath' 2>&1)" || fail "packageOverrides: a key that matches nothing stops the evaluation: $msg"
+  case "$msg" in
+    *'packageOverrides."example.com/cgofix/internal/latee", packageOverrides."example.com/cgofix/internal/pure" match no cgo package'*) ;;
+    *) fail "packageOverrides: no warning for the keys that match no cgo package: $msg" ;;
+  esac
+  case "$msg" in
+    *'packageOverrides."example.com/cgofix/internal/lz4"'*)
+      fail "packageOverrides: a warning names a key that a cgo package takes: $msg" ;;
+  esac
+  echo "ok: packageOverrides: keys that match no cgo package are warned about"
+}
+
+# goEnv.builders is exported; a caller that predates packageOverrides
+# passes none.
+check_builders_without_overrides() {
+  local got
+  got="$(nix eval --impure "${exec_opt[@]}" --expr "
+    let goEnv = (builtins.getFlake \"$flake\").legacyPackages.\${builtins.currentSystem}.goEnv;
+    in (goEnv.builders { srcStr = \"/nonexistent\"; cgoEnabled = false; ldflags = [ ]; }) ? compile
+  ")" || fail "goEnv.builders does not evaluate without packageOverrides"
+  [ "$got" = "true" ] || fail "goEnv.builders without packageOverrides gave $got"
+  echo "ok: goEnv.builders works without packageOverrides"
+}
+
 check_run hello-deps hello "hello, gonixgo"
 check_modinfo hello-deps hello .
 check_main_program hello-deps hello
@@ -226,9 +258,10 @@ check_modinfo nethttp nethttp .
 
 # cgo: C, C++, Objective-C and assembly, a third-party cgo module, and two
 # libraries from packageOverrides.
-# The last word is what __FILE__ is in a cgo file: as under go build
-# -trimpath, the module's name stands for wherever the source is.
-check_run cgo cgofix "3 8 7 4 4 zstd true saved pure /_/example.com/cgofix/internal/cadd/where.go"
+# The 10 is a macro that the env of a packageOverrides entry defines. The
+# last word is what __FILE__ is in a cgo file: as under go build -trimpath,
+# the module's name stands for wherever the source is.
+check_run cgo cgofix "3 8 7 10 4 4 zstd true saved pure /_/example.com/cgofix/internal/cadd/where.go"
 check_modinfo cgo cgofix . cgoShell
 check_no_source_refs cgo
 check_stdenv 'fixtures.cgo.packages."example.com/cgofix/internal/cadd"' true
@@ -237,6 +270,8 @@ check_stdenv 'fixtures.cgo.bins.cgofix' true
 check_stdenv 'fixtures.nethttp.bins.nethttp' false
 check_override_lookup
 check_override_typo
+check_override_unmatched
+check_builders_without_overrides
 
 # A package edit rebuilds it, its importers and the link. Nothing else.
 check_incremental hello-deps internal/greet/greet.go \

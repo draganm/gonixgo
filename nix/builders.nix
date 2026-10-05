@@ -4,7 +4,7 @@
 { lib, cacert, stdenv, go, tool, stdlib, system, goos, goarch }:
 
 # Per-application settings.
-{ srcStr, cgoEnabled, ldflags, packageOverrides }:
+{ srcStr, cgoEnabled, ldflags, packageOverrides ? { } }:
 let
   goBin = "${go}/bin/go";
   builder = "${tool}/bin/gonixgo";
@@ -88,8 +88,12 @@ in
         buildInputs = override.buildInputs or [ ];
         env = override.env or { };
         buildCommand = "${builder} compile";
-        # The link of a binary with this package needs its libraries too.
-        passthru.linkInputs = override.buildInputs or [ ];
+        passthru = {
+          # The link of a binary with this package needs its libraries too.
+          linkInputs = override.buildInputs or [ ];
+          # The packageOverrides keys this package would take.
+          overrideKeys = [ importPath module ];
+        };
       };
 
   # One binary. With a cgo package in it, the Go linker runs the C linker,

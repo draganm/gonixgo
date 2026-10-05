@@ -20,6 +20,6 @@ func main() {
 	p := pointer.Save("saved")
 	saved := pointer.Restore(p).(string)
 	pointer.Unref(p)
-	fmt.Println(cadd.Add(1, 2), cadd.Twice(4), cadd.Seven(), cxx.Length("four"), objc.Length("objc"),
+	fmt.Println(cadd.Add(1, 2), cadd.Twice(4), cadd.Seven(), cadd.Extra(), cxx.Length("four"), objc.Length("objc"),
 		zstd.RoundTrip("zstd"), lz4.Bound(100) > 100, saved, pure.Name(), cadd.Where())
 }

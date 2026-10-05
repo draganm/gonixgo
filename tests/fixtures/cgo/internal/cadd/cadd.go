@@ -20,3 +20,7 @@ func Twice(x int) int { return int(C.call_twice(C.int(x))) }
 
 // Seven is implemented in assembly.
 func Seven() int { return int(C.asm_seven()) }
+
+// Extra is a macro that the environment of the compile defines, 0 when it
+// does not.
+func Extra() int { return int(C.extra()) }
