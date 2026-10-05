@@ -143,7 +143,7 @@ func (c *Compiler) prefixMap(m PathMap) string {
 // Job is one compile.
 type Job struct {
 	Dir    string   // working directory
-	IncDir string   // the -I directory: "." for a file in Dir, the package directory for a generated file
+	IncDir string   // the -I directory: the package directory, also for a generated file compiled elsewhere
 	Flags  []string // preprocessor flags, then compiler flags
 	File   string   // source file, relative to Dir or absolute
 	Obj    string   // object file to write

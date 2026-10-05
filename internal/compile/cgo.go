@@ -211,7 +211,7 @@ func runCgo(tc *gotool.Toolchain, m Manifest, workDir string) (goFiles, members 
 		// Not an error: a symbol may resolve only in the final link. The
 		// Go linker looks for a member of this name and then leaves the
 		// link to the C linker.
-		fmt.Fprintf(os.Stderr, "gonixgo: the trial link of %s failed; its binaries will be linked by the C linker. The linker said:\n%s\n", m.ImportPath, bytes.TrimSpace(out))
+		fmt.Fprintf(os.Stderr, "gonixgo: the trial link of %s failed. This is not an error: its binaries will be linked by the C linker. The linker said:\n%s\n", m.ImportPath, bytes.TrimSpace(out))
 		fail := filepath.Join(workDir, "dynimportfail")
 		if err := os.WriteFile(fail, nil, 0o644); err != nil {
 			return nil, nil, err

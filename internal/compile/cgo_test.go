@@ -135,13 +135,45 @@ func TestRunCgoTrialLinkFailure(t *testing.T) {
 	m := cgoManifest(goBin, testutil.WriteTree(t, files), std)
 	m.Cgo.CFiles = []string{"add.c", "ext.c"}
 	out := t.TempDir()
-	if err := Run(m, out, t.TempDir()); err != nil {
-		t.Fatal(err)
+	var runErr error
+	log := captureStderr(t, func() { runErr = Run(m, out, t.TempDir()) })
+	if runErr != nil {
+		t.Fatal(runErr)
 	}
 	want := []string{"__.PKGDEF", "_go_.o", "_x001.o", "_x002.o", "_x003.o", "_x004.o", "dynimportfail"}
 	if got := members(t, readArchive(t, out)); !reflect.DeepEqual(got, want) {
 		t.Errorf("archive members = %q, want %q", got, want)
 	}
+	// The log of a build that succeeds now holds a linker's error. It must
+	// say which package it is about and that the build did not fail.
+	for _, want := range []string{"example.com/app/cadd", "not an error", "not_defined_anywhere"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("the build log lacks %q:\n%s", want, log)
+		}
+	}
+}
+
+// captureStderr runs f with the process's standard error, which the build
+// steps write their diagnostics to, going to a file, and returns what was
+// written.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stderr
+	os.Stderr = file
+	defer func() { os.Stderr = saved }()
+	f()
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func TestRunCgoPkgConfigMissing(t *testing.T) {
