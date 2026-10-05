@@ -28,7 +28,8 @@ func restoreSrcDir(flags []string, dir string) []string {
 }
 
 // srcDirRefs returns what follows each ${SRCDIR} in flags, up to the
-// character that ends a path inside a flag.
+// character that ends a path inside a flag. White space does not: a flag
+// is one argument, so a space in it is part of a name.
 func srcDirRefs(flags []string) []string {
 	var refs []string
 	for _, flag := range flags {
@@ -38,7 +39,7 @@ func srcDirRefs(flags []string) []string {
 				break
 			}
 			flag = flag[i+len(srcDirVar):]
-			end := strings.IndexAny(flag, ",=:\"' \t")
+			end := strings.IndexAny(flag, ",=:\"'")
 			if end < 0 {
 				end = len(flag)
 			}

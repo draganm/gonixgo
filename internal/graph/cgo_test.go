@@ -36,6 +36,9 @@ func TestSrcDirRefs(t *testing.T) {
 		{`-DX="${SRCDIR}/data"`, []string{"/data"}},
 		{"-DA=${SRCDIR}/a:${SRCDIR}/b", []string{"/a", "/b"}},
 		{"-I${SRCDIR}/../shared", []string{"/../shared"}},
+		// go list hands over one flag per element, so a space is part of
+		// the path: `#cgo CFLAGS: "-I${SRCDIR}/my include"`.
+		{"-I${SRCDIR}/my include", []string{"/my include"}},
 	}
 	for _, tt := range tests {
 		if got := srcDirRefs([]string{tt.in}); !reflect.DeepEqual(got, tt.want) {
