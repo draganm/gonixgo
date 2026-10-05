@@ -121,7 +121,8 @@ goEnv.buildGoApplication {
 
 A key is an import path or a module path. A package takes the entry for its
 import path if there is one, otherwise its module's. Any other attribute in
-an entry is an error.
+an entry is an error, and a key that no cgo package of the build takes gets
+a warning, because such an entry changes nothing.
 
 Two things differ from `go build`:
 

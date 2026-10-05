@@ -78,7 +78,7 @@ scratch directory, `<src>` its source directory.
 1. **cgo**, run in `<src>` with `CGO_LDFLAGS=` in the environment:
 
    ```
-   cgo -objdir <obj>/ -importpath <import path> "-ldflags=<quoted ldflags>" -- -I <obj>/ <cppflags> <cflags> ./a.go …
+   cgo -objdir <obj>/ -importpath <import path> "-ldflags=<quoted ldflags>" -- <cppflags> <cflags> ./a.go …
    ```
 
    It writes `_cgo_gotypes.go`, `_cgo_export.c`, `_cgo_export.h`,
@@ -91,12 +91,13 @@ scratch directory, `<src>` its source directory.
    ```
    $CC -I <inc> -fPIC [-arch arm64] -pthread -fno-caret-diagnostics -Qunused-arguments \
      -fmessage-length=0 -ffile-prefix-map=<obj>=/tmp/go-build -gno-record-gcc-switches [-fno-common] \
-     -I <obj>/ <cppflags> <cflags> -ffile-prefix-map=<module dir>=/_/<module>[@<version>] \
+     <cppflags> <cflags> -ffile-prefix-map=<module dir>=/_/<module>[@<version>] \
      -frandom-seed=<id> -o <obj>/_xNNN.o -c <file>
    ```
 
-   Generated files compile in `<obj>` with `<inc>` = `<src>`. The package's
-   own files compile in `<src>` with `<inc>` = `.`. Objects are numbered in
+   Generated files compile in `<obj>`, the package's own files in `<src>`.
+   `<inc>` is `<src>` for both; `go build -x` prints it as `.` for a
+   command that runs there. Objects are numbered in
    this order: `_cgo_export.c`, each `a.cgo2.c`, the assembly files, the C
    files, the Objective-C files, then the C++ files, which use `$CXX` and
    `<cxxflags>`. `-fno-common` is passed on darwin, and the `-arch` flags
@@ -163,7 +164,9 @@ goEnv.buildGoApplication {
 A key is an import path or a module path. A package takes the entry for its
 import path if there is one, otherwise the entry for its module. An entry
 affects cgo packages only. Any other attribute in an entry is an error that
-names the key and the attribute.
+names the key and the attribute. A key that no cgo package of the build
+takes is reported with a warning: it changes nothing, so it is most likely
+misspelt, but it may match on another platform.
 
 A package whose `#cgo` directives need only what the platform provides, such
 as libc or the macOS frameworks, needs no entry.
@@ -261,7 +264,8 @@ has C++ files.
 ## Builders
 
 `nix/builders.nix` takes `stdenv`, which `mkGoEnv` passes as `pkgs.stdenv`,
-and the application's `packageOverrides`.
+and the application's `packageOverrides`, `{ }` when a caller of
+`goEnv.builders` passes none.
 
 ### `compile`
 
@@ -279,7 +283,8 @@ The tool reads the manifest and the output path from `NIX_ATTRS_JSON_FILE`
 in both cases. The outputs are the same: `$out/pkg.a` and `$out/importcfg`.
 
 The result also exposes the override's `buildInputs` as `linkInputs`, for
-the link.
+the link, and the two keys the package would take as `overrideKeys`, for the
+warning about entries that match nothing.
 
 ### `link`
 
@@ -370,10 +375,11 @@ when cgo is enabled and it uses the cgo parts of the standard library.
 | A package has SWIG, Fortran or `.syso` files | `resolve` reports it with the other load problems, naming the package and the kind of file. |
 | A local package's `#cgo` directive names a path outside `src` | `resolve` reports it, naming the package and the path. |
 | A `packageOverrides` entry has an unknown attribute | `buildGoApplication` throws, naming the key and the attribute. |
+| A `packageOverrides` key matches no cgo package of the build | A warning naming the key. The build goes on. |
 | A package uses `#cgo pkg-config:` and `pkg-config` is not on `PATH` | `compile` fails, naming the pkg-config packages and the two `packageOverrides` attributes to set. |
 | `pkg-config` fails | Its output, then the same hint. |
 | The C compiler fails | Its output, then one line saying that a missing header or library is supplied through `packageOverrides."<import path>".buildInputs`. |
-| The trial link fails | Not an error; see above. |
+| The trial link fails | Not an error; see above. The log gets the linker's output and says so. |
 | The final link fails | The linker's output, then the same one-line hint. |
 
 ## Not in this version
@@ -438,7 +444,9 @@ The 2026-10-03 document is edited to agree.
 tests/fixtures/cgo/
   main.go
   internal/cadd/   cgo, a C file, a header under include/ named through
-                   ${SRCDIR}, an exported Go function called from C, a .S file
+                   ${SRCDIR}, an exported Go function called from C, a .S file,
+                   a cgo file that returns its __FILE__, a macro that only
+                   $CGO_CFLAGS defines
   internal/cxx/    a C++ file behind an extern "C" header
   internal/objc/   an Objective-C file on darwin, a pure-Go stand-in elsewhere
   internal/zstd/   #cgo pkg-config: libzstd
@@ -448,13 +456,17 @@ tests/fixtures/cgo/
 
 It also imports a small third-party cgo module,
 `github.com/mattn/go-pointer`. Its `packageOverrides` give `internal/zstd`
-zstd and pkg-config, and `internal/lz4` lz4 alone. lz4 has no pkg-config
-flags to carry its path, so it links only if `buildInputs` reach the link.
-Neither library is in the macOS SDK, so neither builds without its entry.
+zstd and pkg-config, `internal/lz4` lz4 alone, and `internal/cadd` a
+`CGO_CFLAGS` that defines the macro. lz4 has no pkg-config flags to carry
+its path, so it links only if `buildInputs` reach the link. Neither library
+is in the macOS SDK, so neither builds without its entry.
 
 `tests/run.sh` asserts:
 
-- The binary runs and prints the expected line.
+- The binary runs and prints the expected line. The line holds the macro's
+  value, which shows the entry's `env` reached the compile, and the
+  `__FILE__` of a cgo file, which must be what `go build -trimpath` makes
+  it: `/_/<module>/<path>`.
 - `go version -m` matches a `go build -trimpath -buildvcs=false` of the
   fixture. The reference build runs in a Nix shell that holds the same
   libraries.
@@ -465,6 +477,9 @@ Neither library is in the macOS SDK, so neither builds without its entry.
   `gopkg-` path.
 - `internal/pure` in this fixture, and the link of the `nethttp` fixture,
   are not stdenv derivations.
+- An entry for an import path wins over one for the module; an unknown
+  attribute is an error naming it; a key that matches no cgo package is a
+  warning naming it; `goEnv.builders` works without `packageOverrides`.
 
 ## Changes by file
 
