@@ -26,6 +26,7 @@ type Toolchain struct {
 var envKeys = []string{
 	"GOOS", "GOARCH", "GOROOT", "GOTOOLDIR",
 	"GO386", "GOAMD64", "GOARM", "GOARM64", "GOMIPS", "GOMIPS64", "GOPPC64", "GORISCV64",
+	"CC", "CXX",
 }
 
 // New asks goBin about itself. goos and goarch may be empty for the host.
@@ -96,20 +97,87 @@ func (t *Toolchain) environ(extra ...string) []string {
 	return append(env, extra...)
 }
 
+// InheritedEnviron is the caller's environment with the variables environ
+// pins replaced by their pinned values, plus extra. The C compiler wrapper,
+// pkg-config and an external link read their configuration from the
+// derivation's environment, so they cannot run in the minimal one.
+func (t *Toolchain) InheritedEnviron(extra ...string) []string {
+	// A later entry for a key replaces an earlier one, here rather than in
+	// whatever reads the environment.
+	pinned := t.environ(extra...)
+	last := map[string]int{}
+	for i, kv := range pinned {
+		key, _, _ := strings.Cut(kv, "=")
+		last[key] = i
+	}
+	var env []string
+	for _, kv := range os.Environ() {
+		key, _, _ := strings.Cut(kv, "=")
+		if _, isPinned := last[key]; !isPinned {
+			env = append(env, kv)
+		}
+	}
+	for i, kv := range pinned {
+		key, _, _ := strings.Cut(kv, "=")
+		if last[key] == i {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
 // Tool runs a toolchain binary such as compile, asm or link in dir. Its
 // output goes to stderr.
 func (t *Toolchain) Tool(dir string, extraEnv []string, name string, args ...string) error {
+	return t.run(t.environ(toolEnv(dir, extraEnv)...), dir, name, args)
+}
+
+// HostTool is Tool with InheritedEnviron: for cgo, which runs the C
+// compiler, and for a link that runs the C linker.
+func (t *Toolchain) HostTool(dir string, extraEnv []string, name string, args ...string) error {
+	return t.run(t.InheritedEnviron(toolEnv(dir, extraEnv)...), dir, name, args)
+}
+
+// toolEnv is what every tool run adds to its environment. The tools
+// resolve relative file arguments against PWD, as cmd/go arranges;
+// -trimpath matches on the resulting absolute paths.
+func toolEnv(dir string, extraEnv []string) []string {
+	return append([]string{"PWD=" + dir}, extraEnv...)
+}
+
+func (t *Toolchain) run(env []string, dir, name string, args []string) error {
 	cmd := exec.Command(filepath.Join(t.ToolDir, name), args...)
 	cmd.Dir = dir
-	// The tools resolve relative file arguments against PWD, as cmd/go
-	// arranges; -trimpath matches on the resulting absolute paths.
-	cmd.Env = t.environ(append([]string{"PWD=" + dir}, extraEnv...)...)
+	cmd.Env = env
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("go tool %s: %w", name, err)
 	}
 	return nil
+}
+
+// Env returns a go env value New read: the GO<arch> keys, CC and CXX.
+func (t *Toolchain) Env(key string) string {
+	return t.env[key]
+}
+
+// CC is the C compiler command: $CC when set, otherwise the toolchain's
+// default. It may hold arguments.
+func (t *Toolchain) CC() string {
+	return t.compiler("CC")
+}
+
+// CXX is CC for C++.
+func (t *Toolchain) CXX() string {
+	return t.compiler("CXX")
+}
+
+func (t *Toolchain) compiler(key string) string {
+	if cmd := os.Getenv(key); cmd != "" {
+		return cmd
+	}
+	return t.env[key]
 }
 
 // PIE reports whether the target's default build mode is a
