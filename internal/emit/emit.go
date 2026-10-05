@@ -39,7 +39,11 @@ func Nix(w io.Writer, g *graph.Graph) error {
 		attr(&b, 3, "name", quote(p.Name))
 		attr(&b, 3, "importPath", quote(p.ImportPath))
 		if p.Local {
-			attr(&b, 3, "src", fmt.Sprintf("b.localDir { name = %s; files = %s; }", quote(p.SrcName), list(p.SrcFiles)))
+			trees := ""
+			if len(p.SrcTrees) > 0 {
+				trees = fmt.Sprintf(" trees = %s;", list(p.SrcTrees))
+			}
+			attr(&b, 3, "src", fmt.Sprintf("b.localDir { name = %s; files = %s;%s }", quote(p.SrcName), list(p.SrcFiles), trees))
 		} else {
 			attr(&b, 3, "src", "modules."+quote(p.ModuleKey))
 		}
@@ -52,6 +56,21 @@ func Nix(w io.Writer, g *graph.Graph) error {
 		attr(&b, 3, "sFiles", list(p.SFiles))
 		attr(&b, 3, "embed", embed(p.Embed))
 		attr(&b, 3, "deps", refs(p.Deps))
+		if c := p.Cgo; c != nil {
+			// Its presence makes the compile builder use the C toolchain.
+			b.WriteString("      cgo = {\n")
+			attr(&b, 4, "pkgName", quote(c.PkgName))
+			attr(&b, 4, "cgoFiles", list(c.CgoFiles))
+			attr(&b, 4, "cFiles", list(c.CFiles))
+			attr(&b, 4, "cxxFiles", list(c.CXXFiles))
+			attr(&b, 4, "mFiles", list(c.MFiles))
+			attr(&b, 4, "cppflags", list(c.CPPFLAGS))
+			attr(&b, 4, "cflags", list(c.CFLAGS))
+			attr(&b, 4, "cxxflags", list(c.CXXFLAGS))
+			attr(&b, 4, "ldflags", list(c.LDFLAGS))
+			attr(&b, 4, "pkgConfig", list(c.PkgConfig))
+			b.WriteString("      };\n")
+		}
 		b.WriteString("    };\n")
 	}
 	b.WriteString("  };\n")
@@ -65,6 +84,12 @@ func Nix(w io.Writer, g *graph.Graph) error {
 		attr(&b, 3, "deps", refs(bin.Deps))
 		attr(&b, 3, "modinfo", quote(bin.Modinfo))
 		attr(&b, 3, "godebug", quote(bin.Godebug))
+		if bin.Cgo {
+			attr(&b, 3, "cgo", "true")
+		}
+		if bin.CXX {
+			attr(&b, 3, "cxx", "true")
+		}
 		b.WriteString("    };\n")
 	}
 	b.WriteString("  };\n")

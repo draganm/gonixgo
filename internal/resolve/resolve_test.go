@@ -147,3 +147,73 @@ func TestPatterns(t *testing.T) {
 		}
 	}
 }
+
+var cgoAppFiles = map[string]string{
+	"go.mod": "module example.com/app\n\ngo 1.21\n",
+	"main.go": `package main
+
+import (
+	"fmt"
+
+	"example.com/app/internal/cadd"
+)
+
+func main() { fmt.Println(cadd.Add(1, 2)) }
+`,
+	"internal/cadd/cadd.go": `package cadd
+
+/*
+#cgo CFLAGS: -I${SRCDIR}/include
+#include "add.h"
+*/
+import "C"
+
+func Add(a, b int) int { return int(C.add(C.int(a), C.int(b))) }
+`,
+	"internal/cadd/add.c":         "#include \"add.h\"\n\nint add(int a, int b) { return a + b; }\n",
+	"internal/cadd/include/add.h": "int add(int a, int b);\n",
+}
+
+func TestRunCgoPackage(t *testing.T) {
+	on := true
+	src := testutil.WriteTree(t, cgoAppFiles)
+	out, err := run(t, Args{Src: src, ModRoot: ".", SubPackages: []string{"."}, CgoEnabled: &on})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`      src = b.localDir { name = "gosrc-example.com-app-internal-cadd"; files = [ "internal/cadd/add.c" "internal/cadd/cadd.go" ]; trees = [ "internal/cadd/include" ]; };`,
+		"      cgo = {\n",
+		`        pkgName = "cadd";`,
+		`        cgoFiles = [ "cadd.go" ];`,
+		`        cFiles = [ "add.c" ];`,
+		`        cflags = [ "-I\${SRCDIR}/include" ];`,
+		"      cgo = true;\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	// go list expanded ${SRCDIR} to the evaluation-time directory; none of
+	// it may reach the build.
+	if strings.Contains(out, src) {
+		t.Errorf("output names the evaluation-time source directory %s:\n%s", src, out)
+	}
+}
+
+// With cgo off go list drops the cgo files, and the graph has no C in it.
+func TestRunCgoPackageWithCgoDisabled(t *testing.T) {
+	off := false
+	files := map[string]string{}
+	for name, content := range cgoAppFiles {
+		files[name] = content
+	}
+	files["internal/cadd/pure.go"] = "//go:build !cgo\n\npackage cadd\n\nfunc Add(a, b int) int { return a + b }\n"
+	out, err := run(t, Args{Src: testutil.WriteTree(t, files), ModRoot: ".", SubPackages: []string{"."}, CgoEnabled: &off})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "cgo = ") || strings.Contains(out, "add.c") {
+		t.Errorf("a graph resolved with cgo off has C in it:\n%s", out)
+	}
+}
