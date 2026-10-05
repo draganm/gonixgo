@@ -113,6 +113,12 @@ naming them; tests are ignored.
 The integration tests have been run on aarch64-darwin only; Linux is
 untested.
 
+## Example
+
+[`examples/rebuild-times`](examples/rebuild-times) builds one small service
+with gonixgo and with `buildGoModule`, and times a rebuild of each after a
+one-line change.
+
 ## Development
 
 ```bash
