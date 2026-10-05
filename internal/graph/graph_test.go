@@ -220,9 +220,10 @@ func TestBuildRejectsUnsupported(t *testing.T) {
 		pkg  golist.Package
 		want string
 	}{
-		{"cgo", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, CgoFiles: []string{"cgo.go"}}, "are not supported yet"},
-		{"cgo hint", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, CgoFiles: []string{"cgo.go"}}, "if the package also builds without cgo, set CGO_ENABLED = 0 in buildGoApplication"},
-		{"syso", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, SysoFiles: []string{"x.syso"}}, "are not supported yet"},
+		{"swig", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, SwigFiles: []string{"x.swig"}}, "example.com/app/c: SWIG files are not supported yet"},
+		{"swig hint", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, SwigCXXFiles: []string{"x.swigcxx"}}, "if the package also builds without cgo, set CGO_ENABLED = 0 in buildGoApplication"},
+		{"fortran", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, CgoFiles: []string{"cgo.go"}, FFiles: []string{"x.f90"}}, "example.com/app/c: Fortran files are not supported yet"},
+		{"syso", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, SysoFiles: []string{"x.syso"}}, "example.com/app/c: .syso files are not supported yet"},
 		{"replace", golist.Package{ImportPath: "github.com/x/y", Name: "y", Dir: "/elsewhere", DepOnly: true, GoFiles: []string{"y.go"},
 			Module: &golist.Module{Path: "github.com/x/y", Version: "v1.0.0", Replace: &golist.Module{Path: "../y", Dir: "/elsewhere"}}}, "replace directives are not supported yet"},
 		{"outside src", golist.Package{ImportPath: "example.com/app/o", Name: "o", Dir: "/other/o", Module: mainMod, DepOnly: true, GoFiles: []string{"o.go"}}, "is outside src"},
@@ -258,5 +259,149 @@ func TestBuildRejectsBadRoots(t *testing.T) {
 	if _, err := Build(Input{Src: "/src", Env: testEnv, Packages: []golist.Package{a, b}}); err == nil ||
 		!strings.Contains(err.Error(), `would both build the binary "tool"`) {
 		t.Fatalf("err = %v, want a duplicate-binary error", err)
+	}
+}
+
+// caddPkg is a local cgo package with every kind of file gonixgo builds,
+// as go list reports it: ${SRCDIR} already expanded to Dir.
+var caddPkg = golist.Package{
+	ImportPath: "example.com/app/internal/cadd", Name: "cadd", Dir: "/src/internal/cadd", Module: mainMod, DepOnly: true,
+	GoFiles: []string{"plain.go"}, CgoFiles: []string{"cadd.go"}, CFiles: []string{"add.c"},
+	CXXFiles: []string{"len.cc"}, MFiles: []string{"objc.m"}, HFiles: []string{"local.h"}, SFiles: []string{"seven.S"},
+	CgoCFLAGS:   []string{"-DBONUS=0", "-I/src/internal/cadd/include", `-DGREETING="hello world"`},
+	CgoCPPFLAGS: []string{"-I/src/internal/cadd/../shared"},
+	CgoLDFLAGS: []string{
+		"-L/src/internal/cadd/lib", "-Wl,-rpath,/src/internal/cadd/lib,-z,now",
+		"/src/internal/cadd/libfoo.a", "-L/src/internal/cadd/absent",
+	},
+	CgoPkgConfig: []string{"libzstd"},
+	Imports:      []string{"C", "unsafe"},
+}
+
+// caddStat is the file system around caddPkg.
+func caddStat(path string) (isDir, exists bool) {
+	switch path {
+	case "/src/internal/cadd/include", "/src/internal/shared", "/src/internal/cadd/lib":
+		return true, true
+	case "/src/internal/cadd/libfoo.a":
+		return false, true
+	}
+	return false, false
+}
+
+// cgoPackages is a program whose main package imports cadd.
+func cgoPackages(cadd golist.Package) []golist.Package {
+	return []golist.Package{
+		std("unsafe"),
+		std("fmt"),
+		cadd,
+		{ImportPath: "example.com/app", Name: "main", Dir: "/src", Module: mainMod,
+			GoFiles: []string{"main.go"}, Imports: []string{cadd.ImportPath, "fmt"}},
+	}
+}
+
+func TestBuildCgoPackage(t *testing.T) {
+	g, err := Build(Input{Packages: cgoPackages(caddPkg), Src: "/src", Env: testEnv, Stat: caddStat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &Package{
+		ImportPath: "example.com/app/internal/cadd", Name: "golocal-example.com-app-internal-cadd",
+		SrcName: "gosrc-example.com-app-internal-cadd",
+		Local:   true, ModulePath: "example.com/app", Subdir: "internal/cadd", TrimTo: "example.com/app/internal/cadd", Lang: "go1.24",
+		GoFiles: []string{"plain.go"}, SFiles: []string{"seven.S"},
+		SrcFiles: []string{
+			"internal/cadd/add.c", "internal/cadd/cadd.go", "internal/cadd/len.cc", "internal/cadd/libfoo.a",
+			"internal/cadd/local.h", "internal/cadd/objc.m", "internal/cadd/plain.go", "internal/cadd/seven.S",
+		},
+		SrcTrees: []string{"internal/cadd/include", "internal/cadd/lib", "internal/shared"},
+		Cgo: &Cgo{
+			PkgName:  "cadd",
+			CgoFiles: []string{"cadd.go"}, CFiles: []string{"add.c"}, CXXFiles: []string{"len.cc"}, MFiles: []string{"objc.m"},
+			CPPFLAGS: []string{"-I${SRCDIR}/../shared"},
+			CFLAGS:   []string{"-DBONUS=0", "-I${SRCDIR}/include", `-DGREETING="hello world"`},
+			LDFLAGS: []string{
+				"-L${SRCDIR}/lib", "-Wl,-rpath,${SRCDIR}/lib,-z,now", "${SRCDIR}/libfoo.a", "-L${SRCDIR}/absent",
+			},
+			PkgConfig: []string{"libzstd"},
+		},
+	}
+	if got := g.Packages["example.com/app/internal/cadd"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("cadd package =\n%+v\ncgo %+v\nwant\n%+v\ncgo %+v", got, got.Cgo, want, want.Cgo)
+	}
+}
+
+func TestBuildCgoBinary(t *testing.T) {
+	g, err := Build(Input{Packages: cgoPackages(caddPkg), Src: "/src", Env: testEnv, Stat: caddStat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bin := g.Bins[0]; !bin.Cgo || !bin.CXX {
+		t.Errorf("binary with a cgo and C++ package: Cgo = %v, CXX = %v, want both", bin.Cgo, bin.CXX)
+	}
+
+	noCXX := caddPkg
+	noCXX.CXXFiles = nil
+	g, err = Build(Input{Packages: cgoPackages(noCXX), Src: "/src", Env: testEnv, Stat: caddStat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bin := g.Bins[0]; !bin.Cgo || bin.CXX {
+		t.Errorf("binary with a cgo package without C++: Cgo = %v, CXX = %v", bin.Cgo, bin.CXX)
+	}
+
+	if bin := build(t, appPackages()).Bins[0]; bin.Cgo || bin.CXX {
+		t.Errorf("pure binary: Cgo = %v, CXX = %v, want neither", bin.Cgo, bin.CXX)
+	}
+}
+
+func TestBuildCgoThirdParty(t *testing.T) {
+	cg := golist.Package{
+		ImportPath: "golang.org/x/sys/cg", Name: "cg", Dir: sysMod.Dir + "/cg", Module: sysMod, DepOnly: true,
+		CgoFiles: []string{"cg.go"}, CgoCFLAGS: []string{"-I" + sysMod.Dir + "/cg/inc"}, Imports: []string{"C"},
+	}
+	stat := func(path string) (bool, bool) {
+		t.Errorf("stat(%s) called for a third-party package", path)
+		return false, false
+	}
+	g, err := Build(Input{Packages: cgoPackages(cg), Src: "/src", Env: testEnv, Stat: stat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := g.Packages["golang.org/x/sys/cg"]
+	if got.Cgo == nil || !reflect.DeepEqual(got.Cgo.CFLAGS, []string{"-I${SRCDIR}/inc"}) {
+		t.Errorf("cgo = %+v, want the module cache directory restored to ${SRCDIR}", got.Cgo)
+	}
+	if got.SrcFiles != nil || got.SrcTrees != nil {
+		t.Errorf("third-party package has SrcFiles %v and SrcTrees %v, want none", got.SrcFiles, got.SrcTrees)
+	}
+}
+
+func TestBuildCgoRootTree(t *testing.T) {
+	stat := func(path string) (bool, bool) { return path == "/src", path == "/src" }
+	g, err := Build(Input{Src: "/src", Env: testEnv, Stat: stat, Packages: []golist.Package{
+		{ImportPath: "example.com/app", Name: "main", Dir: "/src", Module: mainMod,
+			CgoFiles: []string{"main.go"}, CgoCFLAGS: []string{"-I/src"}, Imports: []string{"C"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := g.Packages["example.com/app"]
+	if !reflect.DeepEqual(got.SrcTrees, []string{"."}) || got.Cgo.PkgName != "main" ||
+		!reflect.DeepEqual(got.Cgo.CFLAGS, []string{"-I${SRCDIR}"}) {
+		t.Errorf("package = %+v, cgo = %+v", got, got.Cgo)
+	}
+	if !g.Bins[0].Cgo {
+		t.Error("a cgo main package does not make its binary a cgo binary")
+	}
+}
+
+func TestBuildCgoPathOutsideSrc(t *testing.T) {
+	outside := caddPkg
+	outside.CgoCFLAGS = []string{"-I/src/internal/cadd/../../../elsewhere"}
+	_, err := Build(Input{Packages: cgoPackages(outside), Src: "/src", Env: testEnv, Stat: caddStat})
+	want := "example.com/app/internal/cadd: a #cgo directive names /elsewhere, which is outside src"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want it to contain %q", err, want)
 	}
 }

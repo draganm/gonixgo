@@ -49,6 +49,13 @@ type Package struct {
 	SwigCXXFiles []string
 	SysoFiles    []string
 
+	// The flags of the package's #cgo directives, ${SRCDIR} expanded to Dir.
+	CgoCFLAGS    []string
+	CgoCPPFLAGS  []string
+	CgoCXXFLAGS  []string
+	CgoLDFLAGS   []string
+	CgoPkgConfig []string
+
 	EmbedPatterns []string
 	EmbedFiles    []string
 
