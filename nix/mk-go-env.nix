@@ -35,6 +35,9 @@ let
   builders = import ./builders.nix {
     inherit lib go tool stdlib system goos goarch;
     inherit (buildPkgs) cacert;
+    # cgo packages and the binaries that contain them build with the C
+    # compiler for the platform the program runs on.
+    inherit (pkgs) stdenv;
   };
 
   buildGoApplication = import ./build-go-application.nix {
