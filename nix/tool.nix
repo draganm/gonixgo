@@ -23,4 +23,8 @@ buildGoModule {
   # A static binary can be the builder of a derivation with no other inputs.
   env.CGO_ENABLED = 0;
   doCheck = false;
+  meta = {
+    description = "Builds Go programs with one Nix derivation per package and no lockfile";
+    license = lib.licenses.mit;
+  };
 }

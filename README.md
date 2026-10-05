@@ -121,3 +121,7 @@ tests/run.sh                          # integration tests: real nix builds
 ```
 
 The design is in `docs/superpowers/specs/2026-10-03-gonixgo-design.md`.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
