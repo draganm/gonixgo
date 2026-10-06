@@ -147,3 +147,80 @@ func TestConcatFiles(t *testing.T) {
 		t.Fatal("ConcatFiles of a missing file succeeded")
 	}
 }
+
+// envMap indexes an environment by key and fails the test if a key
+// appears twice: which entry wins would depend on the program reading it.
+func envMap(t *testing.T, env []string) map[string]string {
+	t.Helper()
+	m := map[string]string{}
+	for _, kv := range env {
+		key, value, _ := strings.Cut(kv, "=")
+		if _, dup := m[key]; dup {
+			t.Errorf("%s appears twice in the environment", key)
+		}
+		m[key] = value
+	}
+	return m
+}
+
+func TestInheritedEnviron(t *testing.T) {
+	t.Setenv("NIX_CFLAGS_COMPILE", "-isystem /x")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	t.Setenv("HOME", "/caller")
+	work := t.TempDir()
+	tc, err := New(testutil.Go(t), "", "", work)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := envMap(t, tc.InheritedEnviron())
+	// What the compiler wrapper reads comes through.
+	if got := env["NIX_CFLAGS_COMPILE"]; got != "-isystem /x" {
+		t.Errorf("NIX_CFLAGS_COMPILE = %q, want the caller's", got)
+	}
+	// What the toolchain pins does not.
+	if got, ok := env["GOFLAGS"]; !ok || got != "" {
+		t.Errorf("GOFLAGS = %q (set: %v), want it pinned to empty", got, ok)
+	}
+	if got, want := env["HOME"], filepath.Join(work, "home"); got != want {
+		t.Errorf("HOME = %q, want the private %q", got, want)
+	}
+	if env["GOENV"] != "off" || env["GOTOOLCHAIN"] != "local" {
+		t.Errorf("GOENV = %q, GOTOOLCHAIN = %q", env["GOENV"], env["GOTOOLCHAIN"])
+	}
+
+	env = envMap(t, tc.InheritedEnviron("TERM=dumb", "GOFLAGS=x"))
+	if env["TERM"] != "dumb" || env["GOFLAGS"] != "x" {
+		t.Errorf("extra entries do not win: TERM = %q, GOFLAGS = %q", env["TERM"], env["GOFLAGS"])
+	}
+}
+
+func TestHostToolRunsAndReportsFailure(t *testing.T) {
+	tc, err := New(testutil.Go(t), "", "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tc.HostTool(t.TempDir(), nil, "compile", "-V"); err != nil {
+		t.Fatal(err)
+	}
+	err = tc.HostTool(t.TempDir(), nil, "compile", "-no-such-flag")
+	if err == nil || !strings.Contains(err.Error(), "go tool compile") {
+		t.Fatalf("err = %v, want it to name the tool", err)
+	}
+}
+
+func TestCCAndCXX(t *testing.T) {
+	t.Setenv("CC", "my-cc -m64")
+	t.Setenv("CXX", "")
+	tc, err := New(testutil.Go(t), "", "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tc.CC(); got != "my-cc -m64" {
+		t.Errorf("CC() = %q, want $CC", got)
+	}
+	// With $CXX unset the toolchain's own default applies.
+	if got := tc.CXX(); got == "" || got != tc.Env("CXX") {
+		t.Errorf("CXX() = %q, want the toolchain default %q", got, tc.Env("CXX"))
+	}
+}

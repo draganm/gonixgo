@@ -214,10 +214,10 @@ place. `module` is the owning module's path, used to look up
 `packageOverrides`; `trimTo` is what `-trimpath` rewrites the source directory
 to. File lists in `localDir` are relative to the source root.
 
-Fields a `compile` node may carry beyond those shown: `sFiles`, `cgoFiles`,
-`cFiles`, `cxxFiles`, `hFiles`, `sysoFiles`, `embed` (pattern to file list),
-`cgo` (`cflags`, `ldflags`, `pkgConfig`). A `test` node carries the same
-optional fields, plus `testEmbed` and `xTestEmbed`.
+Fields a `compile` node may carry beyond those shown: `sFiles`, `embed`
+(pattern to file list) and, for a cgo package, `cgo`, which the
+[cgo design](2026-10-05-cgo-design.md) describes. A `test` node carries the
+same optional fields, plus `testEmbed` and `xTestEmbed`.
 
 In a `test` node, `deps` are the package's own direct imports, `testDeps` are
 the direct imports its test files add, and `recompile` lists the local
@@ -373,8 +373,9 @@ Writes the link importcfg (standard library, the main package, its transitive
 dependencies, and a `modinfo` line), then runs `go tool link` with the caller's
 `ldflags`. The build ID is derived from a hash of the link manifest, which
 names every input's store path: the linker turns it into the Mach-O `LC_UUID`
-and the ELF build ID, so each binary gets its own, reproducibly. The C toolchain is available when cgo is enabled, and the linker
-chooses internal or external linking as it does under `go build`.
+and the ELF build ID, so each binary gets its own, reproducibly. The C toolchain is available when the binary contains a cgo
+package, and the linker chooses internal or external linking as it does under
+`go build`.
 
 The module info matches `go build -trimpath`: `path`, `mod`, one `dep` line per
 module that provides a package to this binary with its `h1:` sum, `=>` lines
@@ -399,11 +400,14 @@ the same directory that the package does not use, changes nothing.
 
 ## cgo
 
-A package with cgo, C, C++ or assembly-for-gcc files compiles through
-`stdenv.mkDerivation` with `stdenv.cc`. The tool runs `go tool cgo`, compiles
-the generated and hand-written C sources with the C compiler, and packs the
-objects into the archive. `cgo` directives and `pkg-config` names from
-`go list` are honoured.
+The [cgo design](2026-10-05-cgo-design.md) has the details; this is the
+outline.
+
+A cgo package, with its C, C++, Objective-C and assembly-for-gcc files,
+compiles through `stdenv.mkDerivation` with `stdenv.cc`. The tool runs
+`go tool cgo`, compiles the generated and hand-written C sources with the C
+compiler, and packs the objects into the archive. `cgo` directives and
+`pkg-config` names from `go list` are honoured.
 
 `packageOverrides` supplies libraries:
 
@@ -411,7 +415,7 @@ objects into the archive. `cgo` directives and `pkg-config` names from
 packageOverrides."github.com/mattn/go-sqlite3" = {
   buildInputs = [ pkgs.sqlite ];
   nativeBuildInputs = [ pkgs.pkg-config ];
-  env.CGO_CFLAGS = "-DSQLITE_ENABLE_FTS5";
+  env.CGO_CFLAGS = "-O2 -g -DSQLITE_ENABLE_FTS5";
 };
 ```
 
@@ -507,7 +511,8 @@ non-zero. Nix then reports that the program failed.
 
 `go.work` (forced off), `vendor/` directories (ignored; modules come from the
 module cache), PGO, `gcflags`, the race detector, coverage, content-addressed
-derivations, and `GOEXPERIMENT`/`GOFIPS140` configuration.
+derivations, `GOEXPERIMENT`/`GOFIPS140` configuration, and SWIG, Fortran and
+`.syso` files. `.syso` support may be added later.
 
 ## Testing gonixgo
 
@@ -561,6 +566,7 @@ internal/emit/       graph to Nix
 internal/resolve/    the evaluation-time pipeline
 internal/gotool/     locating and running compile, asm, link
 internal/compile/    compile, assembly, embeds, cgo
+internal/cc/         the C compiler as cmd/go drives it
 internal/link/       importcfg, link
 internal/fetch/      the fallback module download
 internal/gotest/     test variants, test main, runner
@@ -577,7 +583,8 @@ tests/run.sh         integration driver
 2. **Cross-compilation and monorepo.** `evalPkgs`, target threading,
    `modRoot`, both kinds of `replace`. Fixtures `cross` and `monorepo`.
 3. **cgo.** The stdenv compile path, `packageOverrides`, external linking.
-   Fixture `cgo`.
+   Fixture `cgo`. Built before stage 2; see the
+   [cgo design](2026-10-05-cgo-design.md).
 4. **Tests.** The `-test` pass, test nodes, test main, `testExtraSrc`,
    `doCheck`. Fixture `tests`.
 

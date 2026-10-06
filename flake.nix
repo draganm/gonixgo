@@ -28,7 +28,13 @@
         let goEnv = mkGoEnv { inherit pkgs; };
         in {
           inherit goEnv;
-          fixtures = import ./tests/fixtures.nix { inherit goEnv; };
+          fixtures = import ./tests/fixtures.nix { inherit goEnv pkgs; };
+          # What a plain `go build` of the cgo fixture needs; the
+          # integration tests build their reference binary in it.
+          cgoShell = pkgs.mkShell {
+            packages = [ goEnv.go pkgs.pkg-config ];
+            buildInputs = [ pkgs.zstd pkgs.lz4 ];
+          };
         });
 
       devShells = eachSystem (system: pkgs: {

@@ -30,6 +30,7 @@ type Manifest struct {
 	GoFiles    []string            `json:"goFiles"`    //
 	SFiles     []string            `json:"sFiles"`     //
 	Embed      map[string][]string `json:"embed"`      // //go:embed pattern to files
+	Cgo        *Cgo                `json:"cgo"`        // nil for a pure package
 	Importcfgs []string            `json:"importcfgs"` // importcfg fragments of the standard library and direct imports
 }
 
@@ -48,6 +49,17 @@ func Run(m Manifest, outDir, workDir string) error {
 		return err
 	}
 
+	// In a cgo package the assembly files go to the C compiler with the
+	// rest of the C side.
+	sFiles := m.SFiles
+	var cgoGoFiles, cgoMembers []string
+	if m.Cgo != nil {
+		if cgoGoFiles, cgoMembers, err = runCgo(tc, m, workDir); err != nil {
+			return err
+		}
+		sFiles = nil
+	}
+
 	archive := filepath.Join(outDir, "pkg.a")
 	pkgPath := m.ImportPath
 	if m.IsMain {
@@ -56,8 +68,8 @@ func Run(m Manifest, outDir, workDir string) error {
 	trim := m.SrcDir + "=>" + m.TrimTo + ";" + workDir + "=>"
 
 	args := []string{"-o", archive, "-trimpath", trim, "-p", pkgPath, "-lang=" + m.Lang}
-	if len(m.SFiles) == 0 {
-		// Without assembly every function must have a body.
+	if len(sFiles) == 0 && m.Cgo == nil {
+		// Without assembly or C every function must have a body.
 		args = append(args, "-complete")
 	}
 	args = append(args, "-buildid", "", "-c="+strconv.Itoa(cores()))
@@ -79,7 +91,7 @@ func Run(m Manifest, outDir, workDir string) error {
 	if tc.Shared() {
 		asm = append(asm, "-shared")
 	}
-	if len(m.SFiles) > 0 {
+	if len(sFiles) > 0 {
 		// The compiler needs the assembly's symbol ABIs, and writes the
 		// header the assembly includes.
 		symabis := filepath.Join(workDir, "symabis")
@@ -87,25 +99,26 @@ func Run(m Manifest, outDir, workDir string) error {
 		if err := os.WriteFile(asmhdr, nil, 0o644); err != nil {
 			return err
 		}
-		gen := slices.Concat(asm, []string{"-gensymabis", "-o", symabis}, dotSlash(m.SFiles))
+		gen := slices.Concat(asm, []string{"-gensymabis", "-o", symabis}, dotSlash(sFiles))
 		if err := tc.Tool(m.SrcDir, nil, "asm", gen...); err != nil {
 			return err
 		}
 		args = append(args, "-symabis", symabis, "-asmhdr", asmhdr)
 	}
-	if err := tc.Tool(m.SrcDir, nil, "compile", append(args, dotSlash(m.GoFiles)...)...); err != nil {
+	goFiles := append(dotSlash(m.GoFiles), cgoGoFiles...)
+	if err := tc.Tool(m.SrcDir, nil, "compile", append(args, goFiles...)...); err != nil {
 		return err
 	}
 
 	var objects []string
-	for _, s := range m.SFiles {
+	for _, s := range sFiles {
 		obj := filepath.Join(workDir, strings.TrimSuffix(filepath.Base(s), ".s")+".o")
 		if err := tc.Tool(m.SrcDir, nil, "asm", slices.Concat(asm, []string{"-o", obj, "./" + s})...); err != nil {
 			return err
 		}
 		objects = append(objects, obj)
 	}
-	if err := appendObjects(archive, objects); err != nil {
+	if err := appendObjects(archive, append(objects, cgoMembers...)); err != nil {
 		return err
 	}
 

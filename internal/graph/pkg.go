@@ -14,18 +14,16 @@ import (
 
 // newPackage turns one non-standard go list package into a graph node. It
 // also returns the module a third-party package comes from.
-func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package) (*Package, *Module, error) {
+func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package, stat func(string) (isDir, exists bool)) (*Package, *Module, error) {
 	m := p.Module
 	switch {
 	case m == nil:
 		return nil, nil, fmt.Errorf("%s: not part of a module", p.ImportPath)
 	case m.Replace != nil:
 		return nil, nil, fmt.Errorf("%s: module %s is replaced; replace directives are not supported yet", p.ImportPath, m.Path)
-	case hasNonGo(p):
-		// cgo is on by default, so this is the first error many projects
-		// hit; say how to get past it when the package has a pure-Go build.
-		return nil, nil, fmt.Errorf("%s: cgo, C, C++, Objective-C, Fortran, SWIG and .syso files are not supported yet; "+
-			"if the package also builds without cgo, set CGO_ENABLED = 0 in buildGoApplication", p.ImportPath)
+	}
+	if err := unsupported(p); err != nil {
+		return nil, nil, err
 	}
 
 	pkg := &Package{
@@ -38,6 +36,11 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 		Embed:      embedMap(p.EmbedPatterns, p.EmbedFiles),
 	}
 	for _, imp := range p.Imports {
+		if imp == "C" {
+			// The pseudo-package of cgo. What its generated code imports,
+			// runtime/cgo and syscall, is in the standard library.
+			continue
+		}
 		if mapped, ok := p.ImportMap[imp]; ok {
 			imp = mapped
 		}
@@ -50,6 +53,20 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 		}
 	}
 	sort.Strings(pkg.Deps)
+	if len(p.CgoFiles) > 0 {
+		pkg.Cgo = &Cgo{
+			PkgName:   p.Name,
+			CgoFiles:  p.CgoFiles,
+			CFiles:    p.CFiles,
+			CXXFiles:  p.CXXFiles,
+			MFiles:    p.MFiles,
+			CPPFLAGS:  restoreSrcDir(p.CgoCPPFLAGS, p.Dir),
+			CFLAGS:    restoreSrcDir(p.CgoCFLAGS, p.Dir),
+			CXXFLAGS:  restoreSrcDir(p.CgoCXXFLAGS, p.Dir),
+			LDFLAGS:   restoreSrcDir(p.CgoLDFLAGS, p.Dir),
+			PkgConfig: p.CgoPkgConfig,
+		}
+	}
 
 	if m.Main {
 		rel, err := filepath.Rel(src, p.Dir)
@@ -62,6 +79,11 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 		pkg.Subdir = slashDir(rel)
 		pkg.TrimTo = p.ImportPath
 		pkg.SrcFiles = srcFiles(pkg.Subdir, p)
+		if pkg.Cgo != nil {
+			if err := addNamedPaths(pkg, p, src, stat); err != nil {
+				return nil, nil, err
+			}
+		}
 		return pkg, nil, nil
 	}
 
@@ -88,9 +110,24 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 	return pkg, mod, nil
 }
 
-func hasNonGo(p *golist.Package) bool {
-	return len(p.CgoFiles)+len(p.CFiles)+len(p.CXXFiles)+len(p.MFiles)+len(p.FFiles)+
-		len(p.SwigFiles)+len(p.SwigCXXFiles)+len(p.SysoFiles) > 0
+// unsupported reports the kind of file in p that gonixgo does not build.
+func unsupported(p *golist.Package) error {
+	switch {
+	case len(p.SwigFiles)+len(p.SwigCXXFiles) > 0:
+		return unsupportedWithoutCgo(p, "SWIG")
+	case len(p.FFiles) > 0:
+		return unsupportedWithoutCgo(p, "Fortran")
+	case len(p.SysoFiles) > 0:
+		return fmt.Errorf("%s: .syso files are not supported yet", p.ImportPath)
+	}
+	return nil
+}
+
+// unsupportedWithoutCgo is the error for files go list drops when cgo is
+// off; it says how to get past it when the package has a pure-Go build.
+func unsupportedWithoutCgo(p *golist.Package, kind string) error {
+	return fmt.Errorf("%s: %s files are not supported yet; "+
+		"if the package also builds without cgo, set CGO_ENABLED = 0 in buildGoApplication", p.ImportPath, kind)
 }
 
 // slashDir turns a relative directory into the form the graph uses: slash
@@ -106,7 +143,7 @@ func slashDir(rel string) string {
 // the source root.
 func srcFiles(subdir string, p *golist.Package) []string {
 	var files []string
-	for _, group := range [][]string{p.GoFiles, p.SFiles, p.HFiles, p.EmbedFiles} {
+	for _, group := range [][]string{p.GoFiles, p.CgoFiles, p.CFiles, p.CXXFiles, p.MFiles, p.SFiles, p.HFiles, p.EmbedFiles} {
 		for _, f := range group {
 			files = append(files, path.Join(subdir, f))
 		}

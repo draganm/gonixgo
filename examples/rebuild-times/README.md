@@ -13,8 +13,8 @@ nix build --option allow-unsafe-native-code-during-evaluation true .#gonixgo
 ```
 
 Both builds set `CGO_ENABLED = 0`, because the Prometheus client has a cgo
-file on macOS and gonixgo does not build cgo packages yet. Neither runs
-tests.
+file on macOS and the gonixgo revision this example is locked to does not
+build cgo packages. Neither runs tests.
 
 The `vendorHash` in `flake.nix` belongs to the `buildGoModule` half and has
 to be updated whenever `go.mod` changes. The gonixgo half has nothing to

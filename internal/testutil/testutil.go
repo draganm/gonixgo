@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -43,10 +44,29 @@ func WriteTree(t *testing.T, files map[string]string) string {
 // importcfg file listing its archives.
 func StdImportcfg(t *testing.T, goBin string) string {
 	t.Helper()
+	return stdImportcfg(t, goBin, "0")
+}
+
+// CgoStdImportcfg is StdImportcfg with cgo enabled, for tests that build
+// cgo packages. It skips the test when there is no C compiler.
+func CgoStdImportcfg(t *testing.T, goBin string) string {
+	t.Helper()
+	cc := "cc"
+	if fields := strings.Fields(os.Getenv("CC")); len(fields) > 0 {
+		cc = fields[0]
+	}
+	if _, err := exec.LookPath(cc); err != nil {
+		t.Skipf("no C compiler: %v", err)
+	}
+	return stdImportcfg(t, goBin, "1")
+}
+
+func stdImportcfg(t *testing.T, goBin, cgoEnabled string) string {
+	t.Helper()
 	cmd := exec.Command(goBin, "list", "-export", "-f",
 		"{{if .Export}}packagefile {{.ImportPath}}={{.Export}}{{end}}", "std")
 	cmd.Dir = t.TempDir()
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOFLAGS=", "GOWORK=off")
+	cmd.Env = append(os.Environ(), "CGO_ENABLED="+cgoEnabled, "GOFLAGS=", "GOWORK=off")
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {

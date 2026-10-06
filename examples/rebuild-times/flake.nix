@@ -18,8 +18,8 @@
         gonixgo = (gonixgo.lib.mkGoEnv { inherit pkgs; }).buildGoApplication {
           pname = "svc";
           src = ./.;
-          # The Prometheus client has a cgo file on macOS, and gonixgo does
-          # not build cgo packages yet.
+          # The Prometheus client has a cgo file on macOS, and the gonixgo
+          # revision this example is locked to does not build cgo packages.
           CGO_ENABLED = 0;
         };
 

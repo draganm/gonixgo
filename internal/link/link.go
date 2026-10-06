@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/draganm/gonixgo/internal/gotool"
 	"github.com/draganm/gonixgo/internal/modinfo"
@@ -26,6 +27,8 @@ type Manifest struct {
 	Modinfo    string   `json:"modinfo"`    // module info to embed
 	Godebug    string   `json:"godebug"`    // DefaultGODEBUG, "" for none
 	LDFlags    []string `json:"ldflags"`
+	Cgo        bool     `json:"cgo"` // the binary contains a cgo package: link with the C toolchain
+	CXX        bool     `json:"cxx"` // one of its packages has C++ files: the C++ compiler links
 }
 
 // Run links the binary to outDir/bin/<BinName>.
@@ -34,9 +37,9 @@ func Run(m Manifest, outDir, workDir string) error {
 	if err != nil {
 		return err
 	}
-	ldflags, err := SplitFlags(m.LDFlags)
+	ldflags, err := gotool.SplitFlags(m.LDFlags)
 	if err != nil {
-		return err
+		return fmt.Errorf("ldflags %w", err)
 	}
 
 	importcfg := filepath.Join(workDir, "importcfg.link")
@@ -69,11 +72,38 @@ func Run(m Manifest, outDir, workDir string) error {
 	}
 	args = append(args, "-buildmode="+mode, "-buildid="+buildID(m))
 	args = append(args, ldflags...)
-	args = append(args, m.Main)
 
 	// An empty GOROOT keeps the toolchain's path out of the binary, as
 	// go build -trimpath does.
-	return tc.Tool(workDir, []string{"GOROOT="}, "link", args...)
+	env := []string{"GOROOT="}
+	if !m.Cgo {
+		return tc.Tool(workDir, env, "link", append(args, m.Main)...)
+	}
+
+	// C objects are in the link, so the Go linker hands it to the C
+	// linker, which it runs through the compiler. That is the compiler
+	// wrapper of the derivation, and it finds the libraries through the
+	// derivation's environment.
+	compiler := tc.CC()
+	if m.CXX {
+		compiler = tc.CXX()
+	}
+	args = append(withExtld(args, compiler), m.Main)
+	if err := tc.HostTool(workDir, env, "link", args...); err != nil {
+		return fmt.Errorf("%w\nif a library is missing, add it to the buildInputs of the packageOverrides entry of the cgo package that uses it", err)
+	}
+	return nil
+}
+
+// withExtld appends -extld=compiler unless flags already choose the C
+// linker, as cmd/go does.
+func withExtld(flags []string, compiler string) []string {
+	for _, flag := range flags {
+		if flag == "-extld" || strings.HasPrefix(flag, "-extld=") {
+			return flags
+		}
+	}
+	return append(flags, "-extld="+compiler)
 }
 
 // buildID derives the binary's build ID from its manifest. The linker
@@ -86,46 +116,4 @@ func buildID(m Manifest) string {
 	data, _ := json.Marshal(m)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:20])
-}
-
-// SplitFlags splits each element the way `go build -ldflags` splits its
-// argument: on white space, with a leading single or double quote grouping
-// up to its match. There is no unescaping inside quotes.
-func SplitFlags(flags []string) ([]string, error) {
-	var out []string
-	for _, flag := range flags {
-		s := flag
-		for {
-			for len(s) > 0 && isSpace(s[0]) {
-				s = s[1:]
-			}
-			if len(s) == 0 {
-				break
-			}
-			if quote := s[0]; quote == '"' || quote == '\'' {
-				s = s[1:]
-				end := 0
-				for end < len(s) && s[end] != quote {
-					end++
-				}
-				if end == len(s) {
-					return nil, fmt.Errorf("ldflags %q: unterminated %c string", flag, quote)
-				}
-				out = append(out, s[:end])
-				s = s[end+1:]
-				continue
-			}
-			end := 0
-			for end < len(s) && !isSpace(s[end]) {
-				end++
-			}
-			out = append(out, s[:end])
-			s = s[end:]
-		}
-	}
-	return out, nil
-}
-
-func isSpace(c byte) bool {
-	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }

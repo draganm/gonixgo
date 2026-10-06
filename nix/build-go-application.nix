@@ -45,14 +45,34 @@ let
   # The builders need the cgo setting the resolver settled on. It is a
   # literal in the graph, so laziness ties the knot.
   graph = graphFn (mkBuilders {
-    inherit srcStr ldflags;
+    inherit srcStr ldflags packageOverrides;
     inherit (graph) cgoEnabled;
   });
+
+  # A misspelt attribute would otherwise be ignored, and the build would
+  # fail later for want of what it was meant to supply.
+  overrideAttrs = [ "buildInputs" "nativeBuildInputs" "env" ];
+  unknownOverrides = lib.concatLists (lib.mapAttrsToList
+    (key: entry: map (attr: "packageOverrides.\"${key}\".${attr}")
+      (lib.attrNames (removeAttrs entry overrideAttrs)))
+    packageOverrides);
+
+  # An entry that no cgo package takes changes nothing, so it is most
+  # likely a mistake: a misspelt key, a module path without its /v2, a
+  # pure-Go package. It is a warning and not an error because the same key
+  # may match on another platform or under other build tags.
+  takenKeys = lib.concatMap (pkg: pkg.overrideKeys or [ ]) (lib.attrValues graph.packages);
+  unmatchedOverrides = map (key: "packageOverrides.\"${key}\"")
+    (lib.filter (key: !lib.elem key takenKeys) (lib.attrNames packageOverrides));
 
   checked =
     assert lib.assertMsg (graph.goVersion == go.version)
       "gonixgo: evaluation resolved with Go ${graph.goVersion} but the build uses Go ${go.version}";
-    graph;
+    assert lib.assertMsg (unknownOverrides == [ ])
+      "gonixgo: unknown ${lib.concatStringsSep ", " unknownOverrides}; a packageOverrides entry takes ${lib.concatStringsSep ", " overrideAttrs}";
+    lib.warnIf (unmatchedOverrides != [ ])
+      "gonixgo: ${lib.concatStringsSep ", " unmatchedOverrides} ${if lib.length unmatchedOverrides == 1 then "matches" else "match"} no cgo package of this build and ${if lib.length unmatchedOverrides == 1 then "has" else "have"} no effect; a key is the import path of a cgo package or the path of its module"
+      graph;
 in
 runCommand (if version == null then pname else "${pname}-${version}")
 {

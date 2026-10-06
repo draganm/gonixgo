@@ -5,6 +5,7 @@ package graph
 import (
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -41,7 +42,23 @@ type Package struct {
 	SFiles     []string
 	Embed      map[string][]string // //go:embed pattern to matched files
 	SrcFiles   []string            // local: files to copy, relative to the source root
+	SrcTrees   []string            // local: directories to copy whole, relative to the source root, "." for the root
 	Deps       []string            // direct non-standard imports, sorted
+	Cgo        *Cgo                // nil for a pure package
+}
+
+// Cgo is the C side of a cgo package.
+type Cgo struct {
+	PkgName   string   // Go package name, which cgo -dynpackage needs
+	CgoFiles  []string // Go files that import "C"
+	CFiles    []string
+	CXXFiles  []string
+	MFiles    []string
+	CPPFLAGS  []string // the #cgo directives, ${SRCDIR} as written
+	CFLAGS    []string
+	CXXFLAGS  []string
+	LDFLAGS   []string
+	PkgConfig []string
 }
 
 // Binary is one link.
@@ -52,6 +69,8 @@ type Binary struct {
 	Deps    []string // transitive non-standard imports of Main, sorted
 	Modinfo string   // module info to embed
 	Godebug string   // DefaultGODEBUG, "" for none
+	Cgo     bool     // Main or one of Deps is a cgo package: the link needs the C toolchain
+	CXX     bool     // one of them has C++ files: the C++ compiler links
 }
 
 // Graph is everything resolve emits.
@@ -81,6 +100,19 @@ type Input struct {
 	Env      map[string]string // go env: GOVERSION, GOOS, GOARCH, CGO_ENABLED and the GO<arch> keys
 	Tags     []string          // build tags
 	Sums     map[string]string // path@version to h1: sum, from go.sum
+
+	// Stat reports whether path exists and whether it is a directory. nil
+	// means the file system.
+	Stat func(path string) (isDir, exists bool)
+}
+
+// osStat is Input.Stat over the file system.
+func osStat(path string) (isDir, exists bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, false
+	}
+	return info.IsDir(), true
 }
 
 // LoadError lists everything that keeps a graph from being built.
@@ -124,6 +156,10 @@ func Build(in Input) (*Graph, error) {
 		return nil, newLoadError(problems)
 	}
 
+	stat := in.Stat
+	if stat == nil {
+		stat = osStat
+	}
 	byPath := make(map[string]*golist.Package, len(in.Packages))
 	for i := range in.Packages {
 		byPath[in.Packages[i].ImportPath] = &in.Packages[i]
@@ -142,7 +178,7 @@ func Build(in Input) (*Graph, error) {
 		if p.Standard {
 			continue
 		}
-		pkg, mod, err := newPackage(p, in.Src, byPath)
+		pkg, mod, err := newPackage(p, in.Src, byPath, stat)
 		if err != nil {
 			problems = append(problems, err.Error())
 			continue
@@ -202,6 +238,14 @@ func (g *Graph) newBinary(p *golist.Package, in Input) *Binary {
 	}
 	sort.Slice(mods, func(i, j int) bool { return mods[i].Path < mods[j].Path })
 
+	cgo, cxx := false, false
+	for _, ip := range append([]string{p.ImportPath}, deps...) {
+		if c := g.Packages[ip].Cgo; c != nil {
+			cgo = true
+			cxx = cxx || len(c.CXXFiles) > 0
+		}
+	}
+
 	name := execName(p.ImportPath)
 	if g.GOOS == "windows" {
 		name += ".exe"
@@ -219,6 +263,8 @@ func (g *Graph) newBinary(p *golist.Package, in Input) *Binary {
 		Deps:    deps,
 		Modinfo: info.String(),
 		Godebug: p.DefaultGODEBUG,
+		Cgo:     cgo,
+		CXX:     cxx,
 	}
 }
 

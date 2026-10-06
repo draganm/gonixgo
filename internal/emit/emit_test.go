@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/draganm/gonixgo/internal/graph"
@@ -192,5 +194,136 @@ func TestNixOutputEvaluates(t *testing.T) {
 	}
 	if got.GoVersion != "1.26.8" || got.Packages["example.com/app"] != "golocal-example.com-app" || got.Bins["app"] != "gobin-app" {
 		t.Fatalf("evaluated to %+v", got)
+	}
+}
+
+// cgoGraph is testGraph plus a local cgo package, linked into a binary
+// that needs the C++ compiler.
+func cgoGraph() *graph.Graph {
+	g := testGraph()
+	g.Packages["example.com/app/internal/cadd"] = &graph.Package{
+		ImportPath: "example.com/app/internal/cadd", Name: "golocal-example.com-app-internal-cadd",
+		SrcName: "gosrc-example.com-app-internal-cadd", Local: true, ModulePath: "example.com/app",
+		Subdir: "internal/cadd", TrimTo: "example.com/app/internal/cadd", Lang: "go1.24",
+		GoFiles:  []string{"plain.go"},
+		SrcFiles: []string{"internal/cadd/add.c", "internal/cadd/cadd.go", "internal/cadd/plain.go"},
+		SrcTrees: []string{"internal/cadd/include"},
+		Cgo: &graph.Cgo{
+			PkgName: "cadd", CgoFiles: []string{"cadd.go"}, CFiles: []string{"add.c"},
+			CFLAGS: []string{"-DBONUS=0", "-I${SRCDIR}/include"}, LDFLAGS: []string{"-lm"},
+		},
+	}
+	g.Bins[0].Cgo, g.Bins[0].CXX = true, true
+	return g
+}
+
+func TestNixCgoGolden(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Nix(&buf, cgoGraph()); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`      src = b.localDir { name = "gosrc-example.com-app-internal-cadd"; files = [ "internal/cadd/add.c" "internal/cadd/cadd.go" "internal/cadd/plain.go" ]; trees = [ "internal/cadd/include" ]; };
+`,
+		`      deps = [ ];
+      cgo = {
+        pkgName = "cadd";
+        cgoFiles = [ "cadd.go" ];
+        cFiles = [ "add.c" ];
+        cxxFiles = [ ];
+        mFiles = [ ];
+        cppflags = [ ];
+        cflags = [ "-DBONUS=0" "-I\${SRCDIR}/include" ];
+        cxxflags = [ ];
+        ldflags = [ "-lm" ];
+        pkgConfig = [ ];
+      };
+    };
+`,
+		`      godebug = "x=1";
+      cgo = true;
+      cxx = true;
+    };
+`,
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("output lacks\n%s\ngot\n%s", want, buf.String())
+		}
+	}
+}
+
+func TestNixCgoLinkWithoutCXX(t *testing.T) {
+	g := cgoGraph()
+	g.Bins[0].CXX = false
+	var buf bytes.Buffer
+	if err := Nix(&buf, g); err != nil {
+		t.Fatal(err)
+	}
+	if want := "      godebug = \"x=1\";\n      cgo = true;\n    };\n"; !strings.Contains(buf.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, buf.String())
+	}
+}
+
+// A pure graph must print exactly what it printed before cgo existed, or
+// every derivation of every pure project would change.
+func TestNixPureGraphHasNoCgo(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Nix(&buf, testGraph()); err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{"cgo = ", "cxx", "trees"} {
+		if strings.Contains(buf.String(), unwanted) {
+			t.Errorf("pure graph output contains %q:\n%s", unwanted, buf.String())
+		}
+	}
+}
+
+func TestNixCgoRoundTripsThroughNix(t *testing.T) {
+	nix, err := exec.LookPath("nix-instantiate")
+	if err != nil {
+		t.Skip("nix-instantiate not on PATH")
+	}
+	g := cgoGraph()
+	cflags := []string{"-I${SRCDIR}/include", `-DGREETING="hello world"`, `-DPATH='a\b'`}
+	g.Packages["example.com/app/internal/cadd"].Cgo.CFLAGS = cflags
+	file := filepath.Join(t.TempDir(), "graph.nix")
+	var buf bytes.Buffer
+	if err := Nix(&buf, g); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	expr := fmt.Sprintf(`
+		let g = import %s {
+			fetchModule = a: a.name;
+			localDir = a: a.trees or [ ];
+			compile = a: { cflags = a.cgo.cflags or [ ]; pkgName = a.cgo.pkgName or ""; trees = a.src; };
+			link = a: { cgo = a.cgo or false; cxx = a.cxx or false; };
+		};
+		in { cadd = g.packages."example.com/app/internal/cadd"; bin = g.bins.app; }`, file)
+	out, err := exec.Command(nix, "--eval", "--strict", "--json", "-E", expr).Output()
+	if err != nil {
+		t.Fatalf("nix-instantiate: %v", err)
+	}
+	var got struct {
+		Cadd struct {
+			Cflags  []string `json:"cflags"`
+			PkgName string   `json:"pkgName"`
+			Trees   []string `json:"trees"`
+		} `json:"cadd"`
+		Bin struct {
+			Cgo bool `json:"cgo"`
+			CXX bool `json:"cxx"`
+		} `json:"bin"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Cadd.Cflags, cflags) {
+		t.Errorf("cflags came back from Nix as %q, want %q", got.Cadd.Cflags, cflags)
+	}
+	if got.Cadd.PkgName != "cadd" || !reflect.DeepEqual(got.Cadd.Trees, []string{"internal/cadd/include"}) || !got.Bin.Cgo || !got.Bin.CXX {
+		t.Errorf("evaluated to %+v", got)
 	}
 }

@@ -73,6 +73,7 @@ To choose a Go version: `gonixgo.lib.mkGoEnv { inherit pkgs; go = pkgs.go_1_25; 
 | `tags` | `[ ]` | Build tags. |
 | `ldflags` | `[ ]` | Linker flags, split as `go build -ldflags` splits them. |
 | `CGO_ENABLED` | `null` | `null` uses Go's default for the target, which with nixpkgs' Go is on. |
+| `packageOverrides` | `{ }` | Libraries and tools for cgo packages; see [cgo](#cgo). |
 
 Binaries land in `$out/bin`, named as `go build` names them. The result's
 `passthru` has `packages`, `modules` and `bins`, each a set of derivations,
@@ -82,6 +83,58 @@ so one package can be built alone:
 nix build --option allow-unsafe-native-code-during-evaluation true \
   '.#default.packages."example.com/app/internal/web"'
 ```
+
+### cgo
+
+A package that imports `"C"` is built like any other, in its own
+derivation, with the C compiler of the `pkgs` you pass. Its C, C++,
+Objective-C and assembly files are compiled as `go build` compiles them,
+and its `#cgo` directives are honoured, `pkg-config` and `${SRCDIR}`
+included. Pure-Go packages, and binaries with no cgo package in them, are
+built without a C compiler as before.
+
+A package that needs only what the platform provides, such as libc or the
+macOS frameworks, needs nothing from you. One that needs a library from
+nixpkgs gets a `packageOverrides` entry:
+
+```nix
+goEnv.buildGoApplication {
+  pname = "app";
+  src = ./.;
+  packageOverrides = {
+    # One package: its #cgo pkg-config directive names libzstd.
+    "example.com/app/internal/zstd" = {
+      buildInputs = [ pkgs.zstd ];
+      nativeBuildInputs = [ pkgs.pkg-config ];
+    };
+    # Every cgo package of a module.
+    "github.com/mattn/go-sqlite3".env.CGO_CFLAGS = "-O2 -g -DSQLITE_ENABLE_FTS5";
+  };
+}
+```
+
+| Attribute | Default | Meaning |
+|---|---|---|
+| `buildInputs` | `[ ]` | Libraries. The package's compile gets them, and so does the link of every binary that contains the package. |
+| `nativeBuildInputs` | `[ ]` | Tools the compile runs, such as `pkg-config`. |
+| `env` | `{ }` | Environment of the compile. `CGO_CPPFLAGS`, `CGO_CFLAGS`, `CGO_CXXFLAGS` and `CGO_LDFLAGS` mean what they mean to `go build`: setting `CGO_CFLAGS`, `CGO_CXXFLAGS` or `CGO_LDFLAGS` replaces its `-O2 -g` default. |
+
+A key is an import path or a module path. A package takes the entry for its
+import path if there is one, otherwise its module's. Any other attribute in
+an entry is an error, and a key that no cgo package of the build takes gets
+a warning, because such an entry changes nothing.
+
+Two things differ from `go build`:
+
+- A local package is built from a copy of the source that holds only the
+  files `go list` reports for it, plus every file and directory its `#cgo`
+  directives name through `${SRCDIR}`. A file that only an `#include`
+  reaches, such as a header in a subdirectory, is not in that copy until a
+  directive names its directory: `#cgo CFLAGS: -I${SRCDIR}/sub`.
+- `#cgo` flags are not checked against the list of flags `go build`
+  considers safe. A dependency's flags can therefore make the C compiler
+  run code during the build, which the Nix sandbox contains where it is
+  on; it is off by default on macOS.
 
 ## What evaluation needs
 
@@ -105,10 +158,11 @@ environment of whatever builds it: the Nix daemon's, on multi-user installs.
 
 ## Not yet supported
 
-cgo, tests (`doCheck` is accepted and ignored), `replace` directives,
-cross-compilation, `go.work`, and `vendor/` directories. Packages with cgo
-files and `replace` directives are rejected during evaluation with a message
-naming them; tests are ignored.
+Tests (`doCheck` is accepted and ignored), `replace` directives,
+cross-compilation, `go.work`, `vendor/` directories, and packages with SWIG,
+Fortran or `.syso` files; `.syso` support may come later. Such packages and
+`replace` directives are rejected during evaluation with a message naming
+them; tests are ignored.
 
 The integration tests have been run on aarch64-darwin only; Linux is
 untested.
