@@ -73,11 +73,15 @@ To choose a Go version: `gonixgo.lib.mkGoEnv { inherit pkgs; go = pkgs.go_1_25; 
 | `tags` | `[ ]` | Build tags. |
 | `ldflags` | `[ ]` | Linker flags, split as `go build -ldflags` splits them. |
 | `CGO_ENABLED` | `null` | `null` uses Go's default for the target, which with nixpkgs' Go is on. |
-| `packageOverrides` | `{ }` | Libraries and tools for cgo packages; see [cgo](#cgo). |
+| `doCheck` | `true` | Build and run the tests of the program's packages; see [Tests](#tests). |
+| `checkFlags` | `[ ]` | Flags for every test, spelt as for `go test`: `-run`, `-skip`, `-short`, `-v`, `-count`, `-timeout` and the other flags `go test` hands to the test binary. |
+| `nativeCheckInputs` | `[ ]` | Tools on every test's `PATH`. |
+| `checkEnv` | `{ }` | Environment variables for every test. |
+| `packageOverrides` | `{ }` | Libraries and tools for cgo packages, and what tests need; see [cgo](#cgo) and [Tests](#tests). |
 
 Binaries land in `$out/bin`, named as `go build` names them. The result's
-`passthru` has `packages`, `modules` and `bins`, each a set of derivations,
-so one package can be built alone:
+`passthru` has `packages`, `modules`, `bins`, `tests`, `testPackages` and
+`testBins`, each a set of derivations, so one package can be built alone:
 
 ```bash
 nix build --option allow-unsafe-native-code-during-evaluation true \
@@ -136,6 +140,62 @@ Two things differ from `go build`:
   run code during the build, which the Nix sandbox contains where it is
   on; it is off by default on macOS.
 
+### Tests
+
+With `doCheck` on, the build runs the tests of every package of your module
+that a binary contains and that has `_test.go` files; a failing test fails
+the build. Each piece of a package's test binary is its own derivation, so
+editing a test reruns only that package's tests, and editing a source file
+reruns the tests of the packages built on it.
+
+A test runs in a writable copy of its package's files, test files and
+`testdata/`, laid out as in your source, with the package's directory as
+its working directory. `HOME` is an empty writable directory, and Go's
+`bin` comes first on `PATH`. The package under test is compiled without
+`-trimpath`, so a path from `runtime.Caller` names a real file; that file
+is read-only.
+
+A test that reads other files of the repository, or needs tools,
+environment or flags of its own, gets a `packageOverrides` entry:
+
+```nix
+goEnv.buildGoApplication {
+  pname = "app";
+  src = ./.;
+  checkFlags = [ "-short" ];
+  nativeCheckInputs = [ pkgs.git ];
+  checkEnv.TZ = "UTC";
+  packageOverrides."example.com/app/internal/web" = {
+    testExtraSrc = [ "fixtures" ];
+    checkFlags = [ "-skip" "TestNeedsNetwork" ];
+    checkEnv.WEB_FIXTURES = "../../fixtures";
+  };
+}
+```
+
+| Attribute | Default | Meaning |
+|---|---|---|
+| `testExtraSrc` | `[ ]` | Files and directories, relative to `src`, that the tests read outside the package's `testdata/`. |
+| `nativeCheckInputs` | `[ ]` | Tools, after the program's. |
+| `checkFlags` | `[ ]` | Flags, after the program's; where both give a flag, the package's value wins. |
+| `checkEnv` | `{ }` | Environment, merged over the program's. |
+
+`passthru.tests."<import path>"` is a package's test run, whose output is
+the log, and `passthru.testBins."<import path>"` its test binary, which
+builds even when the test fails:
+
+```bash
+nix build --option allow-unsafe-native-code-during-evaluation true \
+  '.#default.testBins."example.com/app/internal/web"'
+cd internal/web && ../../result/bin/web.test -test.run TestFoo -test.v
+```
+
+Not tested: third-party packages, packages that only tests import, and
+packages with only test files. Tests do not run when cross-compiling.
+`go vet`, coverage, the race detector, fuzzing (seed corpora run as
+ordinary tests) and `-json` output are not supported; a build flag in
+`checkFlags`, such as `-race`, is rejected by the test binary.
+
 ## What evaluation needs
 
 - `allow-unsafe-native-code-during-evaluation = true`, from `--option`,
@@ -158,11 +218,10 @@ environment of whatever builds it: the Nix daemon's, on multi-user installs.
 
 ## Not yet supported
 
-Tests (`doCheck` is accepted and ignored), `replace` directives,
-cross-compilation, `go.work`, `vendor/` directories, and packages with SWIG,
-Fortran or `.syso` files; `.syso` support may come later. Such packages and
-`replace` directives are rejected during evaluation with a message naming
-them; tests are ignored.
+`replace` directives, cross-compilation, `go.work`, `vendor/` directories,
+and packages with SWIG, Fortran or `.syso` files; `.syso` support may come
+later. Such packages and `replace` directives are rejected during
+evaluation with a message naming them.
 
 The integration tests have been run on aarch64-darwin only; Linux is
 untested.
