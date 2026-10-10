@@ -568,7 +568,7 @@ The 2026-10-03 document is edited to agree.
   false. The test main is read from the cache. A temporary cache is used
   under `GOCACHE=off`.
 - **`emit`:** golden output with the four sets, `trimTo = null`, `testMain`
-  and `test`. A graph without tests prints as before.
+  and `test`. A graph without tests prints the four sets empty.
 - **`compile`:** an untrimmed package records its real source path. A
   `testMain` node compiles as `main` and records `_testmain.go`.
 - **`link`:** `-X testing.testBinary=1` comes after the caller's `ldflags`.
@@ -583,7 +583,7 @@ The 2026-10-03 document is edited to agree.
 
 ```
 tests/fixtures/tests/
-  cmd/app/          the program; imports q, xonly and cgo; a test of package
+  cmd/app/          the program; imports q, xonly and cnum; a test of package
                     main that checks testing.Testing()
   p/                internal and external tests and an Example; a test that
                     reads testdata/ by a relative path and one that reads it
@@ -596,7 +596,7 @@ tests/fixtures/tests/
   xonly/            external tests only, with TestMain; a test that runs the
                     program's nativeCheckInputs tool, writes under $HOME and
                     reads checkEnv
-  cgo/              a cgo package whose test checks a macro that its
+  cnum/             a cgo package whose test checks a macro that its
                     packageOverrides CGO_CFLAGS defines
   internal/helper/  imported only by p's tests; its own test always fails
   shared/           a file p's test reads through testExtraSrc
@@ -609,12 +609,12 @@ The fixture's entry in `tests/fixtures.nix` sets these:
 - **For `p`:** `testExtraSrc`, the `-skip`,
   `nativeCheckInputs = [ pkgs.jq ]`, and a `checkEnv` value that overrides
   the program's.
-- **For `cgo`:** `env.CGO_CFLAGS`.
+- **For `cnum`:** `env.CGO_CFLAGS`.
 
 `tests/run.sh` asserts:
 
 - **Build:** the program builds, which means every test passed, and runs.
-- **Tested set:** `tests` and `testBins` name exactly `cmd/app`, `cgo`, `p`
+- **Tested set:** `tests` and `testBins` name exactly `cmd/app`, `cnum`, `p`
   and `xonly`.
 - **Skip:** `p`'s log shows its tests ran and the skipped one did not.
 - **Module info:** for `p` and `cmd/app`, the test binary's module info
@@ -644,7 +644,7 @@ The fixture's entry in `tests/fixtures.nix` sets these:
 | File | Change |
 |---|---|
 | `internal/golist/golist.go` | Decode `ForTest`, `TestGoFiles`, `XTestGoFiles`, `TestEmbedPatterns` and `XTestEmbedPatterns`; list with `-test`. |
-| `internal/graph/` | `test.go` (new) holds the tested set, test sources, the test nodes and binaries from the `-test` pass, their module info, and its load problems. |
+| `internal/graph/` | `tests.go` (new) holds the tested set, test sources, the test nodes and binaries from the `-test` pass, their module info, and its load problems. |
 | `internal/emit/emit.go` | Print `testSources`, `testPackages`, `testBins` and `tests`, `trimTo = null`, `testMain` and `test`; refer to `testPackages` nodes. |
 | `internal/resolve/resolve.go` | Run the `-test` pass under `doCheck`, read each test main, and fall back to a temporary cache under `GOCACHE=off`. |
 | `internal/compile/` | An empty `TrimTo` in `compile.go` and `cgo.go`; `TestMain`. |
