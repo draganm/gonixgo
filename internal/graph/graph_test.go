@@ -224,8 +224,8 @@ func TestBuildRejectsUnsupported(t *testing.T) {
 		{"swig hint", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, SwigCXXFiles: []string{"x.swigcxx"}}, "if the package also builds without cgo, set CGO_ENABLED = 0 in buildGoApplication"},
 		{"fortran", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, CgoFiles: []string{"cgo.go"}, FFiles: []string{"x.f90"}}, "example.com/app/c: Fortran files are not supported yet"},
 		{"syso", golist.Package{ImportPath: "example.com/app/c", Name: "c", Dir: "/src/c", Module: mainMod, DepOnly: true, GoFiles: []string{"c.go"}, SysoFiles: []string{"x.syso"}}, "example.com/app/c: .syso files are not supported yet"},
-		{"replace", golist.Package{ImportPath: "github.com/x/y", Name: "y", Dir: "/elsewhere", DepOnly: true, GoFiles: []string{"y.go"},
-			Module: &golist.Module{Path: "github.com/x/y", Version: "v1.0.0", Replace: &golist.Module{Path: "../y", Dir: "/elsewhere"}}}, "replace directives are not supported yet"},
+		{"replace outside src", golist.Package{ImportPath: "github.com/x/y", Name: "y", Dir: "/elsewhere", DepOnly: true, GoFiles: []string{"y.go"},
+			Module: &golist.Module{Path: "github.com/x/y", Version: "v1.0.0", Replace: &golist.Module{Path: "../y", Dir: "/elsewhere"}}}, "replace github.com/x/y => ../y: /elsewhere is outside src /src"},
 		{"outside src", golist.Package{ImportPath: "example.com/app/o", Name: "o", Dir: "/other/o", Module: mainMod, DepOnly: true, GoFiles: []string{"o.go"}}, "is outside src"},
 		{"no module", golist.Package{ImportPath: "example.com/app/n", Name: "n", Dir: "/src/n", DepOnly: true, GoFiles: []string{"n.go"}}, "not part of a module"},
 	}

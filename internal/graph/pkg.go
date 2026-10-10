@@ -13,14 +13,11 @@ import (
 )
 
 // newPackage turns one non-standard go list package into a graph node. It
-// also returns the module a third-party package comes from.
+// also returns the module a third-party package is fetched from.
 func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package, stat func(string) (isDir, exists bool)) (*Package, *Module, error) {
 	m := p.Module
-	switch {
-	case m == nil:
+	if m == nil {
 		return nil, nil, fmt.Errorf("%s: not part of a module", p.ImportPath)
-	case m.Replace != nil:
-		return nil, nil, fmt.Errorf("%s: module %s is replaced; replace directives are not supported yet", p.ImportPath, m.Path)
 	}
 	if err := unsupported(p); err != nil {
 		return nil, nil, err
@@ -30,10 +27,13 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 		ImportPath: p.ImportPath,
 		IsMain:     p.Name == "main",
 		ModulePath: m.Path,
-		Lang:       lang(m.GoVersion),
-		GoFiles:    p.GoFiles,
-		SFiles:     p.SFiles,
-		Embed:      embedMap(p.EmbedPatterns, p.EmbedFiles),
+		// For a replaced module go list reports the replacement's go
+		// directive.
+		Lang:    lang(m.GoVersion),
+		TrimTo:  trimTo(m, p.ImportPath),
+		GoFiles: p.GoFiles,
+		SFiles:  p.SFiles,
+		Embed:   embedMap(p.EmbedPatterns, p.EmbedFiles),
 	}
 	deps, err := deps(p, byPath)
 	if err != nil {
@@ -55,16 +55,20 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 		}
 	}
 
-	if m.Main {
+	// The main module, and a module replaced by a directory, build from
+	// src.
+	if m.Main || m.Replace != nil && m.Replace.Version == "" {
 		rel, err := filepath.Rel(src, p.Dir)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if !m.Main {
+				return nil, nil, fmt.Errorf("replace %s => %s: %s is outside src %s", m.Path, m.Replace.Path, m.Replace.Dir, src)
+			}
 			return nil, nil, fmt.Errorf("%s: directory %s is outside src %s", p.ImportPath, p.Dir, src)
 		}
 		pkg.Local = true
 		pkg.Name = storepath.SanitizeName("golocal-" + p.ImportPath)
 		pkg.SrcName = storepath.SanitizeName("gosrc-" + p.ImportPath)
 		pkg.Subdir = slashDir(rel)
-		pkg.TrimTo = p.ImportPath
 		pkg.SrcFiles = srcFiles(pkg.Subdir, p)
 		if pkg.Cgo != nil {
 			if err := addNamedPaths(pkg, p, src, stat); err != nil {
@@ -74,27 +78,45 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 		return pkg, nil, nil
 	}
 
-	if m.Version == "" || m.Dir == "" {
-		return nil, nil, fmt.Errorf("%s: module %s has no version or is not in the module cache", p.ImportPath, m.Path)
+	// Any other module is fetched: the module itself, or the module
+	// version that replaces it.
+	fetched := m
+	if m.Replace != nil {
+		fetched = m.Replace
+	}
+	if fetched.Version == "" || m.Dir == "" {
+		return nil, nil, fmt.Errorf("%s: module %s has no version or is not in the module cache", p.ImportPath, fetched.Path)
 	}
 	rel, err := filepath.Rel(m.Dir, p.Dir)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil, nil, fmt.Errorf("%s: directory %s is outside module directory %s", p.ImportPath, p.Dir, m.Dir)
 	}
-	key := m.Path + "@" + m.Version
-	pkg.Name = storepath.SanitizeName("gopkg-" + p.ImportPath + "-" + m.Version)
+	key := fetched.Path + "@" + fetched.Version
+	pkg.Name = storepath.SanitizeName("gopkg-" + p.ImportPath + "-" + fetched.Version)
 	pkg.ModuleKey = key
 	pkg.Subdir = slashDir(rel)
-	// cmd/go rewrites a module-cache directory to module@version/subdir.
-	pkg.TrimTo = key + strings.TrimPrefix(p.ImportPath, m.Path)
 	mod := &Module{
 		Key:     key,
-		Path:    m.Path,
-		Version: m.Version,
-		Dir:     m.Dir,
-		Name:    storepath.SanitizeName("gomod-" + m.Path + "-" + m.Version),
+		Path:    fetched.Path,
+		Version: fetched.Version,
+		// For a replaced module go list reports the replacement's
+		// directory.
+		Dir:  m.Dir,
+		Name: storepath.SanitizeName("gomod-" + fetched.Path + "-" + fetched.Version),
 	}
 	return pkg, mod, nil
+}
+
+// trimTo is what -trimpath rewrites the directory of package importPath,
+// of module m, to, as cmd/go computes it: the import path in the main
+// module, which has no version; elsewhere the module's path and version,
+// those of its require line even when it is replaced, followed by the
+// rest of the import path.
+func trimTo(m *golist.Module, importPath string) string {
+	if m.Version == "" {
+		return importPath
+	}
+	return m.Path + "@" + m.Version + strings.TrimPrefix(importPath, m.Path)
 }
 
 // deps returns p's direct non-standard imports, through ImportMap, sorted.

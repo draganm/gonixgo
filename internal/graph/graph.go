@@ -83,6 +83,10 @@ type Graph struct {
 	GOARCH     string
 	CgoEnabled bool
 	Modules    map[string]*Module
+	// DepModules are the module info entries of the modules, other than
+	// the main one, that provide the program's packages, by the path they
+	// are required under.
+	DepModules map[string]modinfo.Module
 	Packages   map[string]*Package
 	Bins       []*Binary
 
@@ -147,6 +151,11 @@ func newTestLoadError(problems []string) *LoadError {
 	return e
 }
 
+// replaceHint follows load problems that come from a directory
+// replacement outside src: Go's, for a directory missing from the store,
+// or newPackage's, for one that is there but outside src.
+const replaceHint = "a directory replace must point inside src; set src to a directory that holds both modules and modRoot to the one with go.mod"
+
 func (e *LoadError) Error() string {
 	var b strings.Builder
 	what := "packages"
@@ -154,13 +163,17 @@ func (e *LoadError) Error() string {
 		what = "tests"
 	}
 	fmt.Fprintf(&b, "%d problem(s) loading %s:", len(e.Problems), what)
-	hint := false
+	tidy, replace := false, false
 	for _, p := range e.Problems {
 		b.WriteString("\n  " + p)
-		hint = hint || strings.Contains(p, "go.sum")
+		tidy = tidy || strings.Contains(p, "go.sum")
+		replace = replace || strings.Contains(p, "replacement directory") || strings.HasPrefix(p, "replace ")
 	}
-	if hint {
+	if tidy {
 		b.WriteString("\nrun `go mod tidy` to update go.sum")
+	}
+	if replace {
+		b.WriteString("\n" + replaceHint)
 	}
 	if e.Tests {
 		b.WriteString("\nset doCheck = false to build without tests")
@@ -205,6 +218,7 @@ func Build(in Input) (*Graph, error) {
 		GOARCH:       in.Env["GOARCH"],
 		CgoEnabled:   in.Env["CGO_ENABLED"] == "1",
 		Modules:      map[string]*Module{},
+		DepModules:   map[string]modinfo.Module{},
 		Packages:     map[string]*Package{},
 		TestPackages: map[string]*Package{},
 		Tests:        map[string]*Test{},
@@ -221,7 +235,9 @@ func Build(in Input) (*Graph, error) {
 		}
 		g.Packages[pkg.ImportPath] = pkg
 		g.addModule(mod, in.Sums)
-		if pkg.Local && len(p.TestGoFiles)+len(p.XTestGoFiles) > 0 {
+		g.addDepModule(p.Module, in.Sums)
+		// Only the main module is tested, as under go test ./... in it.
+		if p.Module.Main && len(p.TestGoFiles)+len(p.XTestGoFiles) > 0 {
 			g.Tested = append(g.Tested, pkg.ImportPath)
 		}
 	}
@@ -266,6 +282,27 @@ func (g *Graph) addModule(mod *Module, sums map[string]string) {
 	}
 }
 
+// addDepModule records the module info entry of m, a module that provides
+// a package, unless m is the main module: its path and version as
+// required, and for a replaced module the replacement's path, version and
+// sum. A directory replacement shows as written, with the version (devel)
+// and no sum.
+func (g *Graph) addDepModule(m *golist.Module, sums map[string]string) {
+	if m.Main {
+		return
+	}
+	d := modinfo.Module{Path: m.Path, Version: m.Version}
+	switch r := m.Replace; {
+	case r == nil:
+		d.Sum = sums[m.Path+"@"+m.Version]
+	case r.Version == "":
+		d.Replace = &modinfo.Module{Path: r.Path, Version: "(devel)"}
+	default:
+		d.Replace = &modinfo.Module{Path: r.Path, Version: r.Version, Sum: sums[r.Path+"@"+r.Version]}
+	}
+	g.DepModules[m.Path] = d
+}
+
 // node returns the package node at key, in TestPackages or Packages.
 func (g *Graph) node(key string) *Package {
 	if p := g.TestPackages[key]; p != nil {
@@ -293,13 +330,13 @@ func (g *Graph) newBinary(p *golist.Package, in Input) *Binary {
 	var mods []modinfo.Module
 	seen := map[string]bool{}
 	for _, ip := range deps {
-		key := g.Packages[ip].ModuleKey
-		if key == "" || seen[key] {
+		path := g.Packages[ip].ModulePath
+		d, ok := g.DepModules[path]
+		if !ok || seen[path] {
 			continue
 		}
-		seen[key] = true
-		m := g.Modules[key]
-		mods = append(mods, modinfo.Module{Path: m.Path, Version: m.Version, Sum: m.Sum})
+		seen[path] = true
+		mods = append(mods, d)
 	}
 	sort.Slice(mods, func(i, j int) bool { return mods[i].Path < mods[j].Path })
 
