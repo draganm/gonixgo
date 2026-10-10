@@ -28,7 +28,12 @@
         let goEnv = mkGoEnv { inherit pkgs; };
         in {
           inherit goEnv;
-          fixtures = import ./tests/fixtures.nix { inherit goEnv pkgs; };
+          fixtures = import ./tests/fixtures.nix {
+            inherit goEnv pkgs mkGoEnv;
+            # A platform this machine cannot build for, so that evalPkgs
+            # is needed to resolve it.
+            linuxPkgs = nixpkgs.legacyPackages.x86_64-linux;
+          };
           # What a plain `go build` of the cgo fixture needs; the
           # integration tests build their reference binary in it.
           cgoShell = pkgs.mkShell {
