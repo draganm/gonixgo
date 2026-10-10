@@ -79,6 +79,7 @@ type Options struct {
 	Dir        string            // working directory, the module root
 	GOOS       string            // "" for the host's
 	GOARCH     string            // "" for the host's
+	GOARM      string            // "" for Go's default
 	CgoEnabled string            // "0", "1", or "" for Go's default
 	Tags       []string          // build tags
 	ModuleEnv  map[string]string // where modules come from, see ModuleEnv
@@ -138,6 +139,9 @@ func (o Options) environWith(extra map[string]string) []string {
 	}
 	if o.GOARCH != "" {
 		set["GOARCH"] = o.GOARCH
+	}
+	if o.GOARM != "" {
+		set["GOARM"] = o.GOARM
 	}
 	if o.CgoEnabled != "" {
 		set["CGO_ENABLED"] = o.CgoEnabled

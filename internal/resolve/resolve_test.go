@@ -280,3 +280,116 @@ func TestRunTestsWithoutBuildCache(t *testing.T) {
 		t.Errorf("no test main with GOCACHE=off:\n%s", out)
 	}
 }
+
+// modRoot must be a directory inside src that holds go.mod.
+func TestRunModRootErrors(t *testing.T) {
+	src := testutil.WriteTree(t, appFiles)
+	for _, tt := range []struct{ modRoot, want string }{
+		{"../x", `modRoot "../x" must be a directory inside src`},
+		{"/abs", `modRoot "/abs" must be a directory inside src`},
+		{"internal", `modRoot "internal": no go.mod in `},
+		{"nope", `modRoot "nope": no go.mod in `},
+	} {
+		if _, err := run(t, Args{Src: src, ModRoot: tt.modRoot, SubPackages: []string{"."}}); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("modRoot %q: err = %v, want %q", tt.modRoot, err, tt.want)
+		}
+	}
+}
+
+// modRoot means the same however it is spelt, and "" is src itself.
+func TestRunModRootSpellings(t *testing.T) {
+	files := map[string]string{}
+	for name, content := range appFiles {
+		files["services/api/"+name] = content
+	}
+	src := testutil.WriteTree(t, files)
+	for _, modRoot := range []string{"services/api", "./services/api/", "services//api"} {
+		if _, err := run(t, Args{Src: src, ModRoot: modRoot, SubPackages: []string{"."}}); err != nil {
+			t.Errorf("modRoot %q: %v", modRoot, err)
+		}
+	}
+	if _, err := run(t, Args{Src: testutil.WriteTree(t, appFiles), SubPackages: []string{"."}}); err != nil {
+		t.Errorf(`modRoot "": %v`, err)
+	}
+}
+
+// GOARM reaches go env and go list, so module info records it.
+func TestRunGOARM(t *testing.T) {
+	out, err := run(t, Args{Src: testutil.WriteTree(t, appFiles), ModRoot: ".", SubPackages: []string{"."},
+		GOOS: "linux", GOARCH: "arm", GOARM: "6"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `build\tGOARM=6\n`) {
+		t.Fatalf("module info does not record GOARM=6:\n%s", out)
+	}
+}
+
+// A cross build leaves cgo off unless asked for.
+func TestRunCrossTurnsCgoOff(t *testing.T) {
+	src := testutil.WriteTree(t, appFiles)
+	out, err := run(t, Args{Src: src, ModRoot: ".", SubPackages: []string{"."}, GOOS: "linux", GOARCH: "arm64", Cross: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "cgoEnabled = false;") {
+		t.Errorf("a cross build resolved with cgo on:\n%s", out)
+	}
+	on := true
+	out, err = run(t, Args{Src: src, ModRoot: ".", SubPackages: []string{"."}, GOOS: "linux", GOARCH: "arm64", Cross: true, CgoEnabled: &on})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "cgoEnabled = true;") {
+		t.Errorf("CGO_ENABLED = 1 in a cross build resolved with cgo off:\n%s", out)
+	}
+}
+
+// When cgo is off only because the build is cross, a package that needs
+// it fails with a line saying how to turn it on.
+func TestRunCrossCgoHint(t *testing.T) {
+	src := testutil.WriteTree(t, cgoAppFiles)
+	_, err := run(t, Args{Src: src, ModRoot: ".", SubPackages: []string{"."}, GOOS: "linux", GOARCH: "arm64", Cross: true})
+	if err == nil || !strings.HasSuffix(err.Error(), "\ncgo is off in a cross build; set CGO_ENABLED = 1 to build cgo packages") {
+		t.Errorf("err = %v, want it to end with the cgo hint", err)
+	}
+	off := false
+	_, err = run(t, Args{Src: src, ModRoot: ".", SubPackages: []string{"."}, GOOS: "linux", GOARCH: "arm64", Cross: true, CgoEnabled: &off})
+	if err == nil || strings.Contains(err.Error(), "cgo is off in a cross build") {
+		t.Errorf("err = %v, want a load error without the cgo hint", err)
+	}
+}
+
+// A package that mixes a cgo file with plain Go files loads with cgo off:
+// go list just leaves the cgo file out. A cross build that left cgo off
+// names such packages in a warning, as the program may then not compile
+// or not work.
+func TestRunCrossWarnsAboutLeftOutCgoFiles(t *testing.T) {
+	src := testutil.WriteTree(t, map[string]string{
+		"go.mod":  "module example.com/app\n\ngo 1.21\n",
+		"main.go": "package main\n\nimport (\n\t\"fmt\"\n\n\t\"example.com/app/p\"\n)\n\nfunc main() { fmt.Println(p.Version, p.Add(1, 2)) }\n",
+		"p/cgo.go": "package p\n\n// int add(int a, int b) { return a + b; }\nimport \"C\"\n\n" +
+			"func Add(a, b int) int { return int(C.add(C.int(a), C.int(b))) }\n",
+		"p/version.go": "package p\n\nconst Version = \"1\"\n",
+	})
+	resolve := func(cgo *bool) (string, error) {
+		var stderr bytes.Buffer
+		a := Args{Go: testutil.Go(t), StoreDir: "/nix/store", Src: src, ModRoot: ".", SubPackages: []string{"."},
+			GOOS: "linux", GOARCH: "arm64", Cross: true, CgoEnabled: cgo}
+		err := Run(a, Options{Stderr: &stderr, CacheDir: t.TempDir()}, io.Discard)
+		return stderr.String(), err
+	}
+	stderr, err := resolve(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "gonixgo: cgo is off in a cross build, so these packages build without their cgo files: example.com/app/p; " +
+		"set CGO_ENABLED = 1 to build cgo packages\n"
+	if !strings.Contains(stderr, want) {
+		t.Errorf("stderr = %q, want it to contain %q", stderr, want)
+	}
+	off := false
+	if stderr, err := resolve(&off); err != nil || strings.Contains(stderr, "cgo is off") {
+		t.Errorf("with CGO_ENABLED = 0 asked for: stderr = %q, err = %v; want no warning", stderr, err)
+	}
+}

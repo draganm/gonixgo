@@ -12,7 +12,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	tc, err := New(testutil.Go(t), "", "", t.TempDir())
+	tc, err := New(testutil.Go(t), "", "", "", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestNewCrossTarget(t *testing.T) {
-	tc, err := New(testutil.Go(t), "linux", "amd64", t.TempDir())
+	tc, err := New(testutil.Go(t), "linux", "amd64", "", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestAsmDefines(t *testing.T) {
 
 func TestNewDisablesTelemetry(t *testing.T) {
 	work := t.TempDir()
-	tc, err := New(testutil.Go(t), "", "", work)
+	tc, err := New(testutil.Go(t), "", "", "", work)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestNewDisablesTelemetry(t *testing.T) {
 }
 
 func TestToolReportsFailure(t *testing.T) {
-	tc, err := New(testutil.Go(t), "", "", t.TempDir())
+	tc, err := New(testutil.Go(t), "", "", "", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestInheritedEnviron(t *testing.T) {
 	t.Setenv("GOFLAGS", "-mod=mod")
 	t.Setenv("HOME", "/caller")
 	work := t.TempDir()
-	tc, err := New(testutil.Go(t), "", "", work)
+	tc, err := New(testutil.Go(t), "", "", "", work)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestInheritedEnviron(t *testing.T) {
 }
 
 func TestHostToolRunsAndReportsFailure(t *testing.T) {
-	tc, err := New(testutil.Go(t), "", "", t.TempDir())
+	tc, err := New(testutil.Go(t), "", "", "", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestHostToolRunsAndReportsFailure(t *testing.T) {
 func TestCCAndCXX(t *testing.T) {
 	t.Setenv("CC", "my-cc -m64")
 	t.Setenv("CXX", "")
-	tc, err := New(testutil.Go(t), "", "", t.TempDir())
+	tc, err := New(testutil.Go(t), "", "", "", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,5 +222,29 @@ func TestCCAndCXX(t *testing.T) {
 	// With $CXX unset the toolchain's own default applies.
 	if got := tc.CXX(); got == "" || got != tc.Env("CXX") {
 		t.Errorf("CXX() = %q, want the toolchain default %q", got, tc.Env("CXX"))
+	}
+}
+
+// GOARM reaches every tool run, and the assembler's defines follow it.
+func TestNewARMVersion(t *testing.T) {
+	tc, err := New(testutil.Go(t), "linux", "arm", "6", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := envMap(t, tc.environ())["GOARM"]; got != "6" {
+		t.Errorf("GOARM = %q in the tool environment, want 6", got)
+	}
+	want := []string{"-D", "GOOS_linux", "-D", "GOARCH_arm", "-D", "GOARM_6", "-D", "GOARM_5"}
+	if got := tc.AsmDefines(); !reflect.DeepEqual(got, want) {
+		t.Errorf("AsmDefines = %v, want %v", got, want)
+	}
+
+	// Without one, Go's default applies and the environment sets none.
+	tc, err = New(testutil.Go(t), "linux", "arm64", "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := envMap(t, tc.environ())["GOARM"]; ok {
+		t.Errorf("GOARM = %q in the tool environment, want none", got)
 	}
 }

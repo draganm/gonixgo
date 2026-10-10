@@ -16,6 +16,7 @@ import (
 type Toolchain struct {
 	GOOS    string
 	GOARCH  string
+	GOARM   string // the ARM version, "" for Go's default
 	GOROOT  string
 	ToolDir string
 
@@ -29,10 +30,11 @@ var envKeys = []string{
 	"CC", "CXX",
 }
 
-// New asks goBin about itself. goos and goarch may be empty for the host.
-// workDir is a scratch directory the toolchain may write to.
-func New(goBin, goos, goarch, workDir string) (*Toolchain, error) {
-	t := &Toolchain{GOOS: goos, GOARCH: goarch, home: filepath.Join(workDir, "home")}
+// New asks goBin about itself. goos and goarch may be empty for the host,
+// and goarm for Go's default. workDir is a scratch directory the
+// toolchain may write to.
+func New(goBin, goos, goarch, goarm, workDir string) (*Toolchain, error) {
+	t := &Toolchain{GOOS: goos, GOARCH: goarch, GOARM: goarm, home: filepath.Join(workDir, "home")}
 	if err := os.MkdirAll(t.home, 0o755); err != nil {
 		return nil, err
 	}
@@ -93,6 +95,9 @@ func (t *Toolchain) environ(extra ...string) []string {
 	}
 	if t.GOARCH != "" {
 		env = append(env, "GOARCH="+t.GOARCH)
+	}
+	if t.GOARM != "" {
+		env = append(env, "GOARM="+t.GOARM)
 	}
 	return append(env, extra...)
 }

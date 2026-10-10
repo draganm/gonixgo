@@ -13,6 +13,7 @@ type Module struct {
 	Path    string
 	Version string
 	Sum     string
+	Replace *Module // the module that replaces this one, nil for none
 }
 
 // Setting is one build line.
@@ -34,9 +35,9 @@ type Info struct {
 func (i Info) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "path\t%s\n", i.Path)
-	fmt.Fprintf(&b, "mod\t%s\t%s\t%s\n", i.Main.Path, i.Main.Version, i.Main.Sum)
+	writeModule(&b, "mod", i.Main)
 	for _, d := range i.Deps {
-		fmt.Fprintf(&b, "dep\t%s\t%s\t%s\n", d.Path, d.Version, d.Sum)
+		writeModule(&b, "dep", d)
 	}
 	for _, s := range i.Settings {
 		key, value := s.Key, s.Value
@@ -49,6 +50,20 @@ func (i Info) String() string {
 		fmt.Fprintf(&b, "build\t%s=%s\n", key, value)
 	}
 	return b.String()
+}
+
+// writeModule writes m as runtime/debug.BuildInfo.String does. A replaced
+// module's line has no sum; the replacement's => line follows, then an
+// empty line.
+func writeModule(b *strings.Builder, word string, m Module) {
+	fmt.Fprintf(b, "%s\t%s\t%s", word, m.Path, m.Version)
+	if m.Replace == nil {
+		fmt.Fprintf(b, "\t%s", m.Sum)
+	} else {
+		b.WriteString("\n")
+		writeModule(b, "=>", *m.Replace)
+	}
+	b.WriteString("\n")
 }
 
 // archKey names the go env variable recorded for each GOARCH.
