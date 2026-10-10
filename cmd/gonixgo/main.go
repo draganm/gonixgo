@@ -16,7 +16,7 @@ var commands = map[string]command{}
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: gonixgo <resolve|compile|link|fetch> ...")
+		fmt.Fprintln(stderr, "usage: gonixgo <resolve|compile|link|test|fetch> ...")
 		return 2
 	}
 	cmd, ok := commands[args[0]]
