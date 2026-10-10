@@ -231,10 +231,12 @@ let cross = pkgs.pkgsCross.aarch64-multiplatform; in
 ```
 
 Nix builds the cross C toolchain when the binary cache lacks it, which it
-does for a Mac building for Linux. When a package needs cgo and cgo is off,
-evaluation fails and says to set `CGO_ENABLED = 1`. A package with a pure-Go
-fallback for builds without cgo, such as `github.com/mattn/go-sqlite3`, builds
-without cgo and fails only when it runs; set `CGO_ENABLED = 1` for those too.
+does for a Mac building for Linux. When cgo is off, a package that cannot
+load without it fails evaluation, and one that loads without its cgo files
+is named in a warning; both say to set `CGO_ENABLED = 1`. Heed the warning:
+such a package may not compile, and one with a pure-Go fallback for builds
+without cgo, such as `github.com/mattn/go-sqlite3`, builds but fails only
+when it runs.
 
 Tests run only when your machine can run the target's binaries.
 

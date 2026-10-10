@@ -31,8 +31,9 @@ program needs a C toolchain for the target. The resolver rejects every
   module info, as `go build` does with `GOARM=6`.
 - In a cross build, `CGO_ENABLED = 1` builds cgo packages with the cross C
   toolchain and the target's libraries from `packageOverrides`. Left at
-  `null`, cgo is off, and a package that needs it fails evaluation with a
-  line saying how to turn it on.
+  `null`, cgo is off. A package that cannot load without cgo fails
+  evaluation, and one that loads without its cgo files is named in a
+  warning; both say how to turn cgo on.
 - A native build uses the same Go, standard library and C toolchain
   derivations as before.
 - A program whose module replaces a dependency with another version, or with
@@ -118,6 +119,14 @@ aarch64-darwin. The probe modules have a directory `replace`, a version
 - In a cross build, `CGO_ENABLED = null` means off: the resolver sets
   `CGO_ENABLED=0`. Native builds keep Go's default, which nixpkgs' Go turns
   on.
+- A package with a cgo file beside plain Go files loads with cgo off: `go
+  list` leaves the cgo file out, and the build may then fail to compile, or
+  the program to work. So when cgo is off only because the build is cross,
+  the resolver asks `go list` again with cgo on and names the packages that
+  have cgo files:
+  `gonixgo: cgo is off in a cross build, so these packages build without their cgo files: <import paths>; set CGO_ENABLED = 1 to build cgo packages`.
+  It is a warning, not an error: a package with a pure-Go fallback builds
+  as intended.
 - With `CGO_ENABLED = 1`, these build with `pkgs.stdenv`, whose `$CC`, `$CXX`
   and `$PKG_CONFIG` are the cross tools:
   - the standard library's cgo variant, which moves from
@@ -232,7 +241,7 @@ Two new arguments:
 | Argument | Type | Meaning |
 |---|---|---|
 | `goarm` | string | `GOARM` for `go env` and `go list`; `""` for none. |
-| `cross` | bool | The build is cross. With `cgoEnabled = null` it means `CGO_ENABLED=0`, and a load error of the first pass ends with `cgo is off in a cross build; set CGO_ENABLED = 1 to build cgo packages`. |
+| `cross` | bool | The build is cross. With `cgoEnabled = null` it means `CGO_ENABLED=0`, a load error of the first pass ends with `cgo is off in a cross build; set CGO_ENABLED = 1 to build cgo packages`, and packages that load without their cgo files are named in a warning. |
 
 ### Compile and link manifests
 
@@ -259,6 +268,7 @@ assembler's `GOARM_*` defines.
 |---|---|
 | `go` does not run on the build platform | `mkGoEnv` assertion naming both platforms and suggesting `pkgs.pkgsBuildBuild.go` or one of its versions. |
 | A cross build with `CGO_ENABLED = null` reaches a package that needs cgo | The load problems, typically "build constraints exclude all Go files", then the cgo line. |
+| A cross build with `CGO_ENABLED = null` reaches a package that loads without its cgo files | A warning naming the packages, with the cgo line. The build may then fail to compile, or the program to work. |
 | A cross build with `CGO_ENABLED = 1` | Nix builds the cross C toolchain when the cache lacks it. Not an error. |
 | `modRoot` absolute, outside `src`, or without `go.mod` | Error naming `modRoot`. |
 | A directory `replace` whose directory does not exist | Go's message with the other load problems, then the replace hint. |
@@ -314,7 +324,10 @@ The 2026-10-03 document is edited to agree.
   - `modRoot` absolute, outside `src`, and without `go.mod`;
   - `goarm` reaches `go env`, so module info records `GOARM=6`;
   - with `cross` and no `cgoEnabled`, a cgo-only package fails with the cgo
-    line; with `cgoEnabled` given, the line is absent.
+    line; with `cgoEnabled` given, the line is absent;
+  - with `cross` and no `cgoEnabled`, a package with a cgo file beside a
+    plain Go file is named in the warning; with `cgoEnabled = false`, there
+    is no warning.
 - **`gotool`:** `GOARM` is in the tool environment, and `GOARM=6` gives the
   assembler `GOARM_6` and `GOARM_5`.
 

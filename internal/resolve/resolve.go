@@ -9,6 +9,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/draganm/gonixgo/internal/emit"
 	"github.com/draganm/gonixgo/internal/golist"
@@ -121,6 +123,9 @@ func Run(a Args, opts Options, stdout io.Writer) error {
 		}
 		return err
 	}
+	if crossCgoOff {
+		warnCgoLeftOut(o, patterns(a.SubPackages), opts.Stderr)
+	}
 	if a.DoCheck && len(g.Tested) > 0 {
 		if err := addTests(g, o, graph.Input{Src: src, Env: env, Tags: a.Tags, Sums: sums}); err != nil {
 			return err
@@ -139,6 +144,30 @@ func Run(a Args, opts Options, stdout io.Writer) error {
 		return err
 	}
 	return emit.Nix(stdout, g)
+}
+
+// warnCgoLeftOut names the packages that a cross build, by leaving cgo
+// off, builds without their cgo files. They load, so nothing else reports
+// them, but they may not compile, or not work. It asks go list again with
+// cgo on; should that fail, there is only no warning.
+func warnCgoLeftOut(o golist.Options, patterns []string, stderr io.Writer) {
+	o.CgoEnabled = "1"
+	pkgs, err := golist.List(o, patterns...)
+	if err != nil {
+		return
+	}
+	var names []string
+	for _, p := range pkgs {
+		if !p.Standard && len(p.CgoFiles) > 0 {
+			names = append(names, p.ImportPath)
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	slices.Sort(names)
+	fmt.Fprintf(stderr, "gonixgo: cgo is off in a cross build, so these packages build without their cgo files: %s; set CGO_ENABLED = 1 to build cgo packages\n",
+		strings.Join(names, ", "))
 }
 
 // moduleDir is the directory of go.mod: modRoot, which must stay inside

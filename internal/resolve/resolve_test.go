@@ -359,3 +359,37 @@ func TestRunCrossCgoHint(t *testing.T) {
 		t.Errorf("err = %v, want a load error without the cgo hint", err)
 	}
 }
+
+// A package that mixes a cgo file with plain Go files loads with cgo off:
+// go list just leaves the cgo file out. A cross build that left cgo off
+// names such packages in a warning, as the program may then not compile
+// or not work.
+func TestRunCrossWarnsAboutLeftOutCgoFiles(t *testing.T) {
+	src := testutil.WriteTree(t, map[string]string{
+		"go.mod":  "module example.com/app\n\ngo 1.21\n",
+		"main.go": "package main\n\nimport (\n\t\"fmt\"\n\n\t\"example.com/app/p\"\n)\n\nfunc main() { fmt.Println(p.Version, p.Add(1, 2)) }\n",
+		"p/cgo.go": "package p\n\n// int add(int a, int b) { return a + b; }\nimport \"C\"\n\n" +
+			"func Add(a, b int) int { return int(C.add(C.int(a), C.int(b))) }\n",
+		"p/version.go": "package p\n\nconst Version = \"1\"\n",
+	})
+	resolve := func(cgo *bool) (string, error) {
+		var stderr bytes.Buffer
+		a := Args{Go: testutil.Go(t), StoreDir: "/nix/store", Src: src, ModRoot: ".", SubPackages: []string{"."},
+			GOOS: "linux", GOARCH: "arm64", Cross: true, CgoEnabled: cgo}
+		err := Run(a, Options{Stderr: &stderr, CacheDir: t.TempDir()}, io.Discard)
+		return stderr.String(), err
+	}
+	stderr, err := resolve(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "gonixgo: cgo is off in a cross build, so these packages build without their cgo files: example.com/app/p; " +
+		"set CGO_ENABLED = 1 to build cgo packages\n"
+	if !strings.Contains(stderr, want) {
+		t.Errorf("stderr = %q, want it to contain %q", stderr, want)
+	}
+	off := false
+	if stderr, err := resolve(&off); err != nil || strings.Contains(stderr, "cgo is off") {
+		t.Errorf("with CGO_ENABLED = 0 asked for: stderr = %q, err = %v; want no warning", stderr, err)
+	}
+}
