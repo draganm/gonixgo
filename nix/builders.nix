@@ -148,10 +148,13 @@ in
       extra = map
         (path:
           let
-            clean = lib.removeSuffix "/" (lib.removePrefix "./" path);
+            # localDir matches trees by their exact spelling, so ./a/,
+            # a//b and a/. are written as a and a/b, and ./ as the root.
+            elems = lib.filter (elem: elem != "" && elem != ".") (lib.splitString "/" path);
+            clean = if elems == [ ] then "." else lib.concatStringsSep "/" elems;
             where = "packageOverrides.\"${key}\".testExtraSrc: \"${path}\"";
           in
-          if lib.hasPrefix "/" clean || lib.elem ".." (lib.splitString "/" clean) then
+          if lib.hasPrefix "/" path || lib.elem ".." elems then
             throw "gonixgo: ${where} leaves src; testExtraSrc paths are relative to src"
           else if !builtins.pathExists "${srcStr}/${clean}" then
             throw "gonixgo: ${where} does not exist in src"

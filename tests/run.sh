@@ -377,15 +377,20 @@ check_test_extra_src_errors() {
   echo "ok: tests: testExtraSrc paths that are missing or leave src are rejected by name"
 }
 
-# ./shared/ means shared: the test that reads it passes.
+# A testExtraSrc path means the same however it is spelt: ././shared//
+# is shared, and ./ is the whole source. Either way the test that reads
+# shared/ passes.
 check_test_extra_src_spelling() {
-  nix build --impure --no-link "${exec_opt[@]}" --expr "
-    ((builtins.getFlake \"$flake\").legacyPackages.\${builtins.currentSystem}.fixtures.testsWith (a: {
-      packageOverrides = a.packageOverrides // {
-        \"example.com/tests/p\" = a.packageOverrides.\"example.com/tests/p\" // { testExtraSrc = [ \"./shared/\" ]; };
-      };
-    })).tests.\"example.com/tests/p\"" || fail "tests: testExtraSrc ./shared/ does not bring shared"
-  echo "ok: tests: testExtraSrc ./shared/ is shared"
+  local path
+  for path in ././shared// ./; do
+    nix build --impure --no-link "${exec_opt[@]}" --expr "
+      ((builtins.getFlake \"$flake\").legacyPackages.\${builtins.currentSystem}.fixtures.testsWith (a: {
+        packageOverrides = a.packageOverrides // {
+          \"example.com/tests/p\" = a.packageOverrides.\"example.com/tests/p\" // { testExtraSrc = [ \"$path\" ]; };
+        };
+      })).tests.\"example.com/tests/p\"" || fail "tests: testExtraSrc \"$path\" does not bring shared"
+  done
+  echo "ok: tests: testExtraSrc paths are read however they are spelt"
 }
 
 # Test attributes on a package that is not tested change nothing: a

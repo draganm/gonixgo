@@ -159,7 +159,9 @@ func TestRunFailingBinary(t *testing.T) {
 	if !errors.Is(err, ErrFailed) {
 		t.Fatalf("err = %v, want ErrFailed", err)
 	}
-	if !strings.Contains(log, "boom\n") || !strings.Contains(log, "FAIL\texample.com/m/p\t") {
+	// As under go test, the process's end comes before the summary: the only
+	// clue when a binary dies by a signal before it prints anything.
+	if !strings.Contains(log, "boom\nexit status 3\nFAIL\texample.com/m/p\t") {
 		t.Errorf("log:\n%s", log)
 	}
 }

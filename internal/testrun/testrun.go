@@ -98,12 +98,12 @@ func Run(m Manifest, logPath, workDir string, stderr io.Writer) error {
 	runErr := cmd.Run()
 	elapsed := fmt.Sprintf("%.3fs", time.Since(start).Seconds())
 	if runErr != nil {
-		switch {
-		case ctx.Err() != nil:
+		if ctx.Err() != nil {
 			fmt.Fprintf(out, "killed: still running %v after -test.timeout\n", killGrace)
-		case !errors.As(runErr, new(*exec.ExitError)):
-			fmt.Fprintln(out, runErr)
 		}
+		// How the process ended, as go test prints it: "exit status 1",
+		// "signal: segmentation fault", or why it did not start.
+		fmt.Fprintln(out, runErr)
 		fmt.Fprintf(out, "FAIL\t%s\t%s\n", m.ImportPath, elapsed)
 		return fmt.Errorf("%s: %w", m.ImportPath, ErrFailed)
 	}
