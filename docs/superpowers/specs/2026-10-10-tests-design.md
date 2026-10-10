@@ -77,7 +77,7 @@ The design relies on these facts.
 | The test main is the package `P.test`, named `main`, with no `ForTest`. Its one `GoFiles` entry is the source cmd/go generated, kept in `GOCACHE` as `<hash>-d`, and it reports `DefaultGODEBUG`. | The probe's `P.test`; the file read back from the cache. |
 | The generated source registers the `Test`, `Benchmark` and `Fuzz` functions and the `Example` functions with their expected output, sets `testdeps.ModulePath` and `testdeps.ImportPath`, and calls `TestMain` when the package defines it. | The file read back from the cache. |
 | `P [P.test]` reports `EmbedPatterns` and `TestEmbedPatterns`, and its `EmbedFiles` cover both. `P_test [P.test]` reports `EmbedFiles` but no patterns; they are `P`'s `XTestEmbedPatterns`. | An embed in each kind of test file. |
-| `go list -test` needs a build cache. A new, empty `GOCACHE` works but rebuilds the standard library's module index. | `GOCACHE=<empty dir>`: 389 index files written. |
+| `go list` needs a build cache, with or without `-test`: under `GOCACHE=off` it fails with "build cache is disabled by GOCACHE=off, but required as of Go 1.12". A new, empty `GOCACHE` works but rebuilds the standard library's module index. | `GOCACHE=off go list -deps`; `GOCACHE=<empty dir>`: 389 index files written. |
 | `go test -x -trimpath` compiles `P [P.test]` with `-p P`, also when `P` is a main package; `P_test [P.test]` with `-p P_test`; `Q [P.test]` as it compiles `Q`; and the test main with `-p main`, `-complete` and the main module's `-lang`. | `go test -x -a -trimpath`. |
 | The test main is recorded as `_testmain.go`, with no directory, with or without `-trimpath`. Without `-trimpath`, `P`'s test files are recorded by their absolute paths. | `go tool objdump` on `go test -c` binaries. |
 | The link adds `-X testing.testBinary=1` after the caller's `-ldflags`. `-s -w` are added only when `go test` runs the binary itself, not under `-c`. | `go test -x`; `cmd/go/internal/load/test.go`. |
@@ -324,8 +324,8 @@ These names are sanitised like the other derivation names.
 `resolve` runs `go list -e -deps -test -json` with the first pass's
 environment and tags, naming the tested packages by import path. `go`
 writes each test main into the build cache. `resolve` uses the caller's
-cache, as the first pass does. If `go env GOCACHE` is `off`, it gives the
-pass a temporary cache and removes it afterwards.
+cache, as the first pass does. If `go env GOCACHE` is `off`, both passes
+get a temporary cache, removed afterwards: `go list` needs one either way.
 
 From the output `resolve` takes:
 
@@ -510,7 +510,7 @@ manifest from `NIX_ATTRS_JSON_FILE`, as `compile` and `link` do, and then:
 | `checkFlags` holds a build flag such as `-race` or `-tags` | The test binary rejects it: `flag provided but not defined: -race`. |
 | A test writes through a `runtime.Caller` path | Permission error, because that path is in the read-only store. Relative paths reach the writable copy. |
 | A cross build | No `-test` pass; `tests` and `testBins` are empty. Not an error. |
-| `go env GOCACHE` is `off` | The `-test` pass uses a temporary cache. |
+| `go env GOCACHE` is `off` | Both `go list` passes use a temporary cache. |
 
 ## Not in this version
 
@@ -646,7 +646,7 @@ The fixture's entry in `tests/fixtures.nix` sets these:
 | `internal/golist/golist.go` | Decode `ForTest`, `TestGoFiles`, `XTestGoFiles`, `TestEmbedPatterns` and `XTestEmbedPatterns`; list with `-test`. |
 | `internal/graph/` | `tests.go` (new) holds the tested set, test sources, the test nodes and binaries from the `-test` pass, their module info, and its load problems. |
 | `internal/emit/emit.go` | Print `testSources`, `testPackages`, `testBins` and `tests`, `trimTo = null`, `testMain` and `test`; refer to `testPackages` nodes. |
-| `internal/resolve/resolve.go` | Run the `-test` pass under `doCheck`, read each test main, and fall back to a temporary cache under `GOCACHE=off`. |
+| `internal/resolve/resolve.go` | Run the `-test` pass under `doCheck`, read each test main, and fall back to a temporary cache for both passes under `GOCACHE=off`. |
 | `internal/compile/` | An empty `TrimTo` in `compile.go` and `cgo.go`; `TestMain`. |
 | `internal/link/link.go` | `Test`. |
 | `internal/testrun/` (new) | The runner. |

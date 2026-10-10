@@ -217,3 +217,66 @@ func TestRunCgoPackageWithCgoDisabled(t *testing.T) {
 		t.Errorf("a graph resolved with cgo off has C in it:\n%s", out)
 	}
 }
+
+// testedFiles is a program whose package p has internal and external
+// tests and testdata; the program imports q, which imports p, and p's
+// external test imports q.
+var testedFiles = map[string]string{
+	"go.mod":            "module example.com/app\n\ngo 1.21\n",
+	"main.go":           "package main\n\nimport \"example.com/app/q\"\n\nfunc main() { println(q.Two()) }\n",
+	"p/p.go":            "package p\n\nfunc One() int { return 1 }\n",
+	"p/p_test.go":       "package p\n\nimport \"testing\"\n\nfunc TestOne(t *testing.T) {\n\tif One() != 1 {\n\t\tt.Fatal(One())\n\t}\n}\n",
+	"p/x_test.go":       "package p_test\n\nimport (\n\t\"testing\"\n\n\t\"example.com/app/q\"\n)\n\nfunc TestTwo(t *testing.T) { _ = q.Two() }\n",
+	"p/testdata/in.txt": "in",
+	"q/q.go":            "package q\n\nimport \"example.com/app/p\"\n\nfunc Two() int { return 2 * p.One() }\n",
+}
+
+func TestRunTests(t *testing.T) {
+	out, err := run(t, Args{Src: testutil.WriteTree(t, testedFiles), ModRoot: ".", SubPackages: []string{"."}, DoCheck: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`    "example.com/app/p" = b.testDir {`,
+		`      files = [ "p/p.go" "p/p_test.go" "p/x_test.go" ];`,
+		`      trees = [ "p/testdata" ];`,
+		`    "example.com/app/q [example.com/app/p.test]" = b.compile {`,
+		`      deps = [ testPackages."example.com/app/p [example.com/app/p.test]" ];`,
+		`    "example.com/app/p.test" = b.compile {`,
+		`testing.MainStart`,
+		`      binName = "p.test";`,
+		`      test = true;`,
+		`    "example.com/app/p" = b.runTest {`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	// The program itself has no tests.
+	if strings.Contains(out, `"example.com/app.test"`) {
+		t.Errorf("output tests the program, which has no test files:\n%s", out)
+	}
+}
+
+func TestRunWithoutDoCheck(t *testing.T) {
+	out, err := run(t, Args{Src: testutil.WriteTree(t, testedFiles), ModRoot: ".", SubPackages: []string{"."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "  tests = {\n  };\n") || strings.Contains(out, "testMain") {
+		t.Errorf("tests resolved without doCheck:\n%s", out)
+	}
+}
+
+// go list -test needs a build cache; with the caller's off, resolve gives
+// it a temporary one.
+func TestRunTestsWithoutBuildCache(t *testing.T) {
+	t.Setenv("GOCACHE", "off")
+	out, err := run(t, Args{Src: testutil.WriteTree(t, testedFiles), ModRoot: ".", SubPackages: []string{"."}, DoCheck: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "testing.MainStart") {
+		t.Errorf("no test main with GOCACHE=off:\n%s", out)
+	}
+}
