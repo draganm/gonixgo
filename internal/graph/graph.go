@@ -138,7 +138,13 @@ func osStat(path string) (isDir, exists bool) {
 type LoadError struct {
 	Problems []string
 	Tests    bool // the problems are in the -test pass
+	// CrossCgoOff says cgo is off only because the build is cross, which
+	// may be why packages did not load.
+	CrossCgoOff bool
 }
+
+// crossCgoHint follows load problems in a cross build that left cgo off.
+const crossCgoHint = "cgo is off in a cross build; set CGO_ENABLED = 1 to build cgo packages"
 
 func newLoadError(problems []string) *LoadError {
 	sort.Strings(problems)
@@ -174,6 +180,9 @@ func (e *LoadError) Error() string {
 	}
 	if replace {
 		b.WriteString("\n" + replaceHint)
+	}
+	if e.CrossCgoOff {
+		b.WriteString("\n" + crossCgoHint)
 	}
 	if e.Tests {
 		b.WriteString("\nset doCheck = false to build without tests")
