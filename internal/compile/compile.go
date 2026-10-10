@@ -22,6 +22,7 @@ type Manifest struct {
 	Go         string              `json:"go"`         // path to the go binary
 	GOOS       string              `json:"goos"`       // "" for the host
 	GOARCH     string              `json:"goarch"`     // "" for the host
+	GOARM      string              `json:"goarm"`      // "" for Go's default
 	ImportPath string              `json:"importPath"` //
 	IsMain     bool                `json:"isMain"`     //
 	SrcDir     string              `json:"srcDir"`     // directory holding the package's files
@@ -38,7 +39,7 @@ type Manifest struct {
 // Run compiles the package into outDir/pkg.a and writes outDir/importcfg,
 // the fragment importers and the linker use to find it.
 func Run(m Manifest, outDir, workDir string) error {
-	tc, err := gotool.New(m.Go, m.GOOS, m.GOARCH, workDir)
+	tc, err := gotool.New(m.Go, m.GOOS, m.GOARCH, m.GOARM, workDir)
 	if err != nil {
 		return err
 	}

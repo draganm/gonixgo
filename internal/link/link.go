@@ -21,6 +21,7 @@ type Manifest struct {
 	Go         string   `json:"go"`
 	GOOS       string   `json:"goos"`
 	GOARCH     string   `json:"goarch"`
+	GOARM      string   `json:"goarm"` // "" for Go's default
 	BinName    string   `json:"binName"`
 	Main       string   `json:"main"`       // the main package's archive
 	Importcfgs []string `json:"importcfgs"` // fragments for the standard library, the main package and its transitive imports
@@ -34,7 +35,7 @@ type Manifest struct {
 
 // Run links the binary to outDir/bin/<BinName>.
 func Run(m Manifest, outDir, workDir string) error {
-	tc, err := gotool.New(m.Go, m.GOOS, m.GOARCH, workDir)
+	tc, err := gotool.New(m.Go, m.GOOS, m.GOARCH, m.GOARM, workDir)
 	if err != nil {
 		return err
 	}
