@@ -34,6 +34,7 @@ type Package struct {
 	Name           string
 	Standard       bool
 	DepOnly        bool
+	ForTest        string // on the copies -test makes, "X [P.test]": P
 	Module         *Module
 	DefaultGODEBUG string
 
@@ -59,6 +60,13 @@ type Package struct {
 	EmbedPatterns []string
 	EmbedFiles    []string
 
+	// The test files and their embeds, which go list reports with or
+	// without -test.
+	TestGoFiles        []string
+	XTestGoFiles       []string
+	TestEmbedPatterns  []string
+	XTestEmbedPatterns []string
+
 	Imports   []string
 	ImportMap map[string]string
 
@@ -74,6 +82,7 @@ type Options struct {
 	CgoEnabled string            // "0", "1", or "" for Go's default
 	Tags       []string          // build tags
 	ModuleEnv  map[string]string // where modules come from, see ModuleEnv
+	GOCACHE    string            // build cache, "" for the caller's
 	Stderr     io.Writer
 }
 
@@ -117,6 +126,9 @@ func (o Options) environWith(extra map[string]string) []string {
 	}
 	for k, v := range extra {
 		set[k] = v
+	}
+	if o.GOCACHE != "" {
+		set["GOCACHE"] = o.GOCACHE
 	}
 	for k, v := range o.ModuleEnv {
 		set[k] = v
@@ -173,7 +185,19 @@ func (o Options) command(args ...string) *exec.Cmd {
 // load are returned with Error set; List itself fails only when the go
 // command does.
 func List(o Options, patterns ...string) ([]Package, error) {
-	args := []string{"list", "-e", "-deps", "-json"}
+	return list(o, nil, patterns)
+}
+
+// ListTests is List with -test for the packages at importPaths. The output
+// adds each package's test copies "X [P.test]" and its test main P.test,
+// whose one file is the source go generated, in the build cache.
+func ListTests(o Options, importPaths ...string) ([]Package, error) {
+	return list(o, []string{"-test"}, importPaths)
+}
+
+func list(o Options, flags, patterns []string) ([]Package, error) {
+	args := append([]string{"list", "-e", "-deps"}, flags...)
+	args = append(args, "-json")
 	if len(o.Tags) > 0 {
 		args = append(args, "-tags", strings.Join(o.Tags, ","))
 	}
