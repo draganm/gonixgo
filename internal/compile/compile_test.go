@@ -192,3 +192,49 @@ func TestAppendObjects(t *testing.T) {
 		t.Fatalf("archive = %q\nwant      %q", got, want)
 	}
 }
+
+// What is under test keeps its source paths, so runtime.Caller names real
+// files; the work directory is still trimmed.
+func TestRunUntrimmed(t *testing.T) {
+	goBin := testutil.Go(t)
+	std := testutil.StdImportcfg(t, goBin)
+	src := testutil.WriteTree(t, map[string]string{"p/p.go": "package p\n\nfunc One() int { return 1 }\n"})
+	out, work := t.TempDir(), t.TempDir()
+	if err := Run(Manifest{
+		Go: goBin, ImportPath: "example.com/m/p", SrcDir: filepath.Join(src, "p"), Lang: "go1.21",
+		GoFiles: []string{"p.go"}, Importcfgs: []string{std},
+	}, out, work); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "pkg.a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(filepath.Join(src, "p", "p.go"))) {
+		t.Errorf("pkg.a does not name %s", filepath.Join(src, "p", "p.go"))
+	}
+	if bytes.Contains(data, []byte(work)) {
+		t.Errorf("pkg.a names the work directory %s", work)
+	}
+}
+
+// A test main has no source directory; it is recorded as _testmain.go, as
+// under go test.
+func TestRunTestMain(t *testing.T) {
+	goBin := testutil.Go(t)
+	std := testutil.StdImportcfg(t, goBin)
+	out, work := t.TempDir(), t.TempDir()
+	if err := Run(Manifest{
+		Go: goBin, ImportPath: "example.com/m/p.test", IsMain: true, Lang: "go1.21",
+		TestMain: "package main\n\nfunc main() {}\n", Importcfgs: []string{std},
+	}, out, work); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "pkg.a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("_testmain.go")) || bytes.Contains(data, []byte(work)) {
+		t.Errorf("pkg.a does not record _testmain.go without the work directory %s", work)
+	}
+}

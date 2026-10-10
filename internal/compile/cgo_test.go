@@ -268,3 +268,24 @@ func TestTrialLinkFlags(t *testing.T) {
 		}
 	}
 }
+
+// Without trimming, as under go test without -trimpath, the C compiler
+// keeps the source paths too.
+func TestRunCgoUntrimmed(t *testing.T) {
+	goBin := testutil.Go(t)
+	std := testutil.CgoStdImportcfg(t, goBin)
+	src := testutil.WriteTree(t, cgoFiles)
+	m := cgoManifest(goBin, src, std)
+	m.TrimTo = ""
+	out, work := t.TempDir(), t.TempDir()
+	if err := Run(m, out, work); err != nil {
+		t.Fatal(err)
+	}
+	archive := readArchive(t, out)
+	if !bytes.Contains(archive, []byte(filepath.Join(src, "cadd"))) {
+		t.Errorf("pkg.a does not name the source directory %s", filepath.Join(src, "cadd"))
+	}
+	if bytes.Contains(archive, []byte("/_/")) || bytes.Contains(archive, []byte(work)) {
+		t.Error("pkg.a has a rewritten source path or names the scratch directory")
+	}
+}

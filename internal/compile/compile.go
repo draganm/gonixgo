@@ -25,12 +25,13 @@ type Manifest struct {
 	ImportPath string              `json:"importPath"` //
 	IsMain     bool                `json:"isMain"`     //
 	SrcDir     string              `json:"srcDir"`     // directory holding the package's files
-	TrimTo     string              `json:"trimTo"`     // what -trimpath rewrites SrcDir to
+	TrimTo     string              `json:"trimTo"`     // what -trimpath rewrites SrcDir to, "" to keep it
 	Lang       string              `json:"lang"`       // e.g. go1.24
 	GoFiles    []string            `json:"goFiles"`    //
 	SFiles     []string            `json:"sFiles"`     //
 	Embed      map[string][]string `json:"embed"`      // //go:embed pattern to files
 	Cgo        *Cgo                `json:"cgo"`        // nil for a pure package
+	TestMain   string              `json:"testMain"`   // a test main's source; SrcDir and GoFiles are then unused
 	Importcfgs []string            `json:"importcfgs"` // importcfg fragments of the standard library and direct imports
 }
 
@@ -40,6 +41,15 @@ func Run(m Manifest, outDir, workDir string) error {
 	tc, err := gotool.New(m.Go, m.GOOS, m.GOARCH, workDir)
 	if err != nil {
 		return err
+	}
+	if m.TestMain != "" {
+		// A test main has no source directory. Written into the work
+		// directory, whose path is trimmed away, it is recorded as
+		// _testmain.go, as under go test.
+		if err := os.WriteFile(filepath.Join(workDir, "_testmain.go"), []byte(m.TestMain), 0o644); err != nil {
+			return err
+		}
+		m.SrcDir, m.GoFiles = workDir, []string{"_testmain.go"}
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
@@ -65,7 +75,10 @@ func Run(m Manifest, outDir, workDir string) error {
 	if m.IsMain {
 		pkgPath = "main"
 	}
-	trim := m.SrcDir + "=>" + m.TrimTo + ";" + workDir + "=>"
+	trim := workDir + "=>"
+	if m.TrimTo != "" {
+		trim = m.SrcDir + "=>" + m.TrimTo + ";" + trim
+	}
 
 	args := []string{"-o", archive, "-trimpath", trim, "-p", pkgPath, "-lang=" + m.Lang}
 	if len(sFiles) == 0 && m.Cgo == nil {
