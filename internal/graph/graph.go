@@ -36,7 +36,9 @@ type Package struct {
 	ModuleKey  string // third-party: key into Graph.Modules
 	ModulePath string
 	Subdir     string // package directory relative to its source root, "" for the root
-	TrimTo     string // what -trimpath rewrites the source directory to
+	TrimTo     string // what -trimpath rewrites the source directory to, "" to keep it
+	TestSrc    string // compiles from the test source of this tested package, "" otherwise
+	TestMain   string // a test main: the source go list generated, "" otherwise
 	Lang       string // -lang value, e.g. go1.24
 	GoFiles    []string
 	SFiles     []string
@@ -71,6 +73,7 @@ type Binary struct {
 	Godebug string   // DefaultGODEBUG, "" for none
 	Cgo     bool     // Main or one of Deps is a cgo package: the link needs the C toolchain
 	CXX     bool     // one of them has C++ files: the C++ compiler links
+	Test    bool     // a test binary: testing.Testing reports true
 }
 
 // Graph is everything resolve emits.
@@ -82,6 +85,15 @@ type Graph struct {
 	Modules    map[string]*Module
 	Packages   map[string]*Package
 	Bins       []*Binary
+
+	// Tested lists the main-module packages with test files, sorted.
+	// AddTests adds their tests.
+	Tested []string
+	// TestPackages are the test copies "X [P.test]" and the test mains
+	// "P.test", by go list import path.
+	TestPackages map[string]*Package
+	// Tests are by tested import path.
+	Tests map[string]*Test
 }
 
 // ModuleList returns the modules sorted by key.
@@ -104,6 +116,9 @@ type Input struct {
 	// Stat reports whether path exists and whether it is a directory. nil
 	// means the file system.
 	Stat func(path string) (isDir, exists bool)
+	// ReadFile reads a test main's generated source. nil means the file
+	// system.
+	ReadFile func(path string) ([]byte, error)
 }
 
 // osStat is Input.Stat over the file system.
@@ -118,6 +133,7 @@ func osStat(path string) (isDir, exists bool) {
 // LoadError lists everything that keeps a graph from being built.
 type LoadError struct {
 	Problems []string
+	Tests    bool // the problems are in the -test pass
 }
 
 func newLoadError(problems []string) *LoadError {
@@ -125,9 +141,19 @@ func newLoadError(problems []string) *LoadError {
 	return &LoadError{Problems: slices.Compact(problems)}
 }
 
+func newTestLoadError(problems []string) *LoadError {
+	e := newLoadError(problems)
+	e.Tests = true
+	return e
+}
+
 func (e *LoadError) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d problem(s) loading packages:", len(e.Problems))
+	what := "packages"
+	if e.Tests {
+		what = "tests"
+	}
+	fmt.Fprintf(&b, "%d problem(s) loading %s:", len(e.Problems), what)
 	hint := false
 	for _, p := range e.Problems {
 		b.WriteString("\n  " + p)
@@ -136,7 +162,19 @@ func (e *LoadError) Error() string {
 	if hint {
 		b.WriteString("\nrun `go mod tidy` to update go.sum")
 	}
+	if e.Tests {
+		b.WriteString("\nset doCheck = false to build without tests")
+	}
 	return b.String()
+}
+
+// problem describes p's load error.
+func problem(p *golist.Package) string {
+	msg := strings.TrimSpace(p.Error.Err)
+	if p.Error.Pos != "" {
+		msg = p.Error.Pos + ": " + msg
+	}
+	return p.ImportPath + ": " + msg
 }
 
 // Build constructs the graph. It reports every problem it finds, not just
@@ -145,11 +183,7 @@ func Build(in Input) (*Graph, error) {
 	var problems []string
 	for i := range in.Packages {
 		if p := &in.Packages[i]; p.Error != nil {
-			msg := strings.TrimSpace(p.Error.Err)
-			if p.Error.Pos != "" {
-				msg = p.Error.Pos + ": " + msg
-			}
-			problems = append(problems, p.ImportPath+": "+msg)
+			problems = append(problems, problem(p))
 		}
 	}
 	if len(problems) > 0 {
@@ -166,12 +200,14 @@ func Build(in Input) (*Graph, error) {
 	}
 
 	g := &Graph{
-		GoVersion:  strings.TrimPrefix(in.Env["GOVERSION"], "go"),
-		GOOS:       in.Env["GOOS"],
-		GOARCH:     in.Env["GOARCH"],
-		CgoEnabled: in.Env["CGO_ENABLED"] == "1",
-		Modules:    map[string]*Module{},
-		Packages:   map[string]*Package{},
+		GoVersion:    strings.TrimPrefix(in.Env["GOVERSION"], "go"),
+		GOOS:         in.Env["GOOS"],
+		GOARCH:       in.Env["GOARCH"],
+		CgoEnabled:   in.Env["CGO_ENABLED"] == "1",
+		Modules:      map[string]*Module{},
+		Packages:     map[string]*Package{},
+		TestPackages: map[string]*Package{},
+		Tests:        map[string]*Test{},
 	}
 	for i := range in.Packages {
 		p := &in.Packages[i]
@@ -184,9 +220,9 @@ func Build(in Input) (*Graph, error) {
 			continue
 		}
 		g.Packages[pkg.ImportPath] = pkg
-		if mod != nil && g.Modules[mod.Key] == nil {
-			mod.Sum = in.Sums[mod.Key]
-			g.Modules[mod.Key] = mod
+		g.addModule(mod, in.Sums)
+		if pkg.Local && len(p.TestGoFiles)+len(p.XTestGoFiles) > 0 {
+			g.Tested = append(g.Tested, pkg.ImportPath)
 		}
 	}
 	if len(problems) > 0 {
@@ -218,7 +254,36 @@ func Build(in Input) (*Graph, error) {
 		return nil, newLoadError(problems)
 	}
 	sort.Slice(g.Bins, func(i, j int) bool { return g.Bins[i].Name < g.Bins[j].Name })
+	sort.Strings(g.Tested)
 	return g, nil
+}
+
+// addModule adds the module of a third-party package, once.
+func (g *Graph) addModule(mod *Module, sums map[string]string) {
+	if mod != nil && g.Modules[mod.Key] == nil {
+		mod.Sum = sums[mod.Key]
+		g.Modules[mod.Key] = mod
+	}
+}
+
+// node returns the package node at key, in TestPackages or Packages.
+func (g *Graph) node(key string) *Package {
+	if p := g.TestPackages[key]; p != nil {
+		return p
+	}
+	return g.Packages[key]
+}
+
+// cgoIn reports whether one of the packages at keys is a cgo package, and
+// whether one has C++ files.
+func (g *Graph) cgoIn(keys []string) (cgo, cxx bool) {
+	for _, key := range keys {
+		if c := g.node(key).Cgo; c != nil {
+			cgo = true
+			cxx = cxx || len(c.CXXFiles) > 0
+		}
+	}
+	return cgo, cxx
 }
 
 // newBinary describes the link of main package p.
@@ -238,13 +303,7 @@ func (g *Graph) newBinary(p *golist.Package, in Input) *Binary {
 	}
 	sort.Slice(mods, func(i, j int) bool { return mods[i].Path < mods[j].Path })
 
-	cgo, cxx := false, false
-	for _, ip := range append([]string{p.ImportPath}, deps...) {
-		if c := g.Packages[ip].Cgo; c != nil {
-			cgo = true
-			cxx = cxx || len(c.CXXFiles) > 0
-		}
-	}
+	cgo, cxx := g.cgoIn(append([]string{p.ImportPath}, deps...))
 
 	name := execName(p.ImportPath)
 	if g.GOOS == "windows" {
@@ -269,7 +328,8 @@ func (g *Graph) newBinary(p *golist.Package, in Input) *Binary {
 }
 
 // closure returns the non-standard packages root imports transitively,
-// sorted, without root itself.
+// sorted, without root itself. It follows both package sets, so it also
+// serves a test main, whose imports are test copies.
 func (g *Graph) closure(root string) []string {
 	seen := map[string]bool{root: true}
 	queue := []string{root}
@@ -277,7 +337,7 @@ func (g *Graph) closure(root string) []string {
 	for len(queue) > 0 {
 		ip := queue[0]
 		queue = queue[1:]
-		for _, dep := range g.Packages[ip].Deps {
+		for _, dep := range g.node(ip).Deps {
 			if !seen[dep] {
 				seen[dep] = true
 				out = append(out, dep)
