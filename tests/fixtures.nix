@@ -28,6 +28,14 @@ let
     src = ./fixtures/hello-deps;
   };
 
+  # The monorepo fixture's arguments, which run.sh varies through
+  # monorepoWith.
+  monorepoArgs = {
+    pname = "monorepo";
+    src = ./fixtures/monorepo;
+    modRoot = "app";
+  };
+
   # The cgo fixture's arguments, with its libraries from the package set p.
   cgoArgs = p: {
     pname = "cgofix";
@@ -67,6 +75,10 @@ in
   # The tests fixture with the attributes f returns, given the default
   # arguments, laid over them.
   testsWith = f: goEnv.buildGoApplication (testsArgs // f testsArgs);
+  monorepo = goEnv.buildGoApplication monorepoArgs;
+  # The monorepo fixture with the attributes f returns, given the default
+  # arguments, laid over them.
+  monorepoWith = f: goEnv.buildGoApplication (monorepoArgs // f monorepoArgs);
 
   # Linux builds made here with the native Go. They cannot run here.
   hello-deps-aarch64-linux = arm64Env.buildGoApplication helloArgs;

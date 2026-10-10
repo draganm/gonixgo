@@ -553,6 +553,58 @@ x86_64_darwin_checks() {
   check_stdenv 'fixtures.cgo-x86_64-darwin.bins.cgofix' true
 }
 
+# monorepo_with <function from the default arguments to the changes> <expression over app>
+# Evaluates the expression with app bound to the monorepo fixture built
+# with the changes.
+monorepo_with() {
+  nix eval --impure --raw "${exec_opt[@]}" --expr "
+    let
+      flake = builtins.getFlake \"$flake\";
+      app = flake.legacyPackages.\${builtins.currentSystem}.fixtures.monorepoWith ($1);
+    in $2"
+}
+
+# A directory replace must point inside src, and modRoot must hold go.mod;
+# the errors say what to change.
+check_monorepo_errors() {
+  local msg hint='a directory replace must point inside src; set src to a directory that holds both modules and modRoot to the one with go.mod'
+  if msg="$(monorepo_with "_: { src = $root/tests/fixtures/monorepo/app; modRoot = \".\"; }" 'app.drvPath' 2>&1)"; then
+    fail "monorepo: evaluated with the replaced module missing from src"
+  fi
+  case "$msg" in
+    *'replacement directory ../lib does not exist'*"$hint"*) ;;
+    *) fail "monorepo: unhelpful error for a replaced module missing from src: $msg" ;;
+  esac
+  if msg="$(monorepo_with "_: { src = \"\${$root/tests/fixtures/monorepo}/app\"; modRoot = \".\"; }" 'app.drvPath' 2>&1)"; then
+    fail "monorepo: evaluated with the replaced module outside src"
+  fi
+  case "$msg" in
+    *'replace example.com/monorepo/lib => ../lib: '*' is outside src '*"$hint"*) ;;
+    *) fail "monorepo: unhelpful error for a replaced module outside src: $msg" ;;
+  esac
+  if msg="$(monorepo_with '_: { modRoot = "nope"; }' 'app.drvPath' 2>&1)"; then
+    fail "monorepo: evaluated with a modRoot that holds no go.mod"
+  fi
+  case "$msg" in
+    *'modRoot "nope": no go.mod in '*) ;;
+    *) fail "monorepo: unhelpful error for a modRoot without go.mod: $msg" ;;
+  esac
+  echo "ok: monorepo: a replace outside src and a modRoot without go.mod are errors that say what to change"
+}
+
+# A monorepo: modRoot, a sibling module behind a directory replace, and a
+# dependency replaced by another version. The output is the source paths
+# the compiler recorded, as go build -trimpath records them, and [3 3 3]
+# from lib, which compiles with its own go 1.21.
+monorepo_checks() {
+  check_run monorepo app "example.com/monorepo/app/main.go example.com/monorepo/lib@v0.0.0-00010101000000-000000000000/lib.go github.com/google/go-cmp@v0.6.0/cmp/compare.go [3 3 3]"
+  check_modinfo_in monorepo monorepo/app app . -
+  check_tested_set monorepo "example.com/monorepo/app"
+  check_fetch_fallback monorepo "github.com/google/go-cmp@v0.7.0"
+  check_no_source_refs monorepo
+  check_monorepo_errors
+}
+
 # `tests/run.sh <check or section> [arguments]` runs that alone.
 if [ $# -gt 0 ]; then
   "$@"
@@ -639,6 +691,7 @@ cross_checks
 if [ "$(uname -s)-$(uname -m)" = Darwin-arm64 ]; then
   x86_64_darwin_checks
 fi
+monorepo_checks
 
 check_exec_error
 check_go_override
