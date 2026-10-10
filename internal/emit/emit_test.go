@@ -98,6 +98,14 @@ const golden = `b: rec {
       godebug = "x=1";
     };
   };
+  testSources = {
+  };
+  testPackages = {
+  };
+  testBins = {
+  };
+  tests = {
+  };
 }
 `
 
@@ -325,5 +333,171 @@ func TestNixCgoRoundTripsThroughNix(t *testing.T) {
 	}
 	if got.Cadd.PkgName != "cadd" || !reflect.DeepEqual(got.Cadd.Trees, []string{"internal/cadd/include"}) || !got.Bin.Cgo || !got.Bin.CXX {
 		t.Errorf("evaluated to %+v", got)
+	}
+}
+
+// testedGraph is testGraph with the tests of one package, p: its copy
+// under test, q recompiled against it, and its test main.
+func testedGraph() *graph.Graph {
+	g := testGraph()
+	pTest, qTest := "example.com/app/p [example.com/app/p.test]", "example.com/app/q [example.com/app/p.test]"
+	g.Tested = []string{"example.com/app/p"}
+	g.TestPackages = map[string]*graph.Package{
+		pTest: {
+			ImportPath: "example.com/app/p", Name: "gotestpkg-example.com-app-p--example.com-app-p.test-",
+			Local: true, ModulePath: "example.com/app", Subdir: "p", TestSrc: "example.com/app/p", Lang: "go1.24",
+			GoFiles: []string{"p.go", "p_test.go"},
+		},
+		qTest: {
+			ImportPath: "example.com/app/q", Name: "gotestpkg-example.com-app-q--example.com-app-p.test-",
+			SrcName: "gosrc-example.com-app-q", Local: true, ModulePath: "example.com/app", Subdir: "q",
+			TrimTo: "example.com/app/q", Lang: "go1.24", GoFiles: []string{"q.go"}, SrcFiles: []string{"q/q.go"},
+			Deps: []string{pTest},
+		},
+		"example.com/app/p.test": {
+			ImportPath: "example.com/app/p.test", Name: "gotestpkg-example.com-app-p.test",
+			Local: true, IsMain: true, ModulePath: "example.com/app", Lang: "go1.24",
+			TestMain: "package main\n\nimport _ \"example.com/app/p\"\n\nfunc main() {}\n",
+			Deps:     []string{pTest, qTest},
+		},
+	}
+	g.Tests = map[string]*graph.Test{
+		"example.com/app/p": {
+			ImportPath: "example.com/app/p", Name: "gotest-example.com-app-p", SrcName: "gosrc-test-example.com-app-p",
+			ModulePath: "example.com/app", Subdir: "p",
+			SrcFiles: []string{"p/p.go", "p/p_test.go"}, SrcTrees: []string{"p/testdata"},
+			Bin: &graph.Binary{
+				Name: "p.test", DrvName: "gotestbin-example.com-app-p", Main: "example.com/app/p.test",
+				Deps:    []string{pTest, qTest, "github.com/fatih/color"},
+				Modinfo: "path\texample.com/app/p.test\n", Godebug: "x=1", Test: true,
+			},
+		},
+	}
+	return g
+}
+
+const testsGolden = `  testSources = {
+    "example.com/app/p" = b.testDir {
+      name = "gosrc-test-example.com-app-p";
+      importPath = "example.com/app/p";
+      module = "example.com/app";
+      files = [ "p/p.go" "p/p_test.go" ];
+      trees = [ "p/testdata" ];
+    };
+  };
+  testPackages = {
+    "example.com/app/p [example.com/app/p.test]" = b.compile {
+      name = "gotestpkg-example.com-app-p--example.com-app-p.test-";
+      importPath = "example.com/app/p";
+      src = testSources."example.com/app/p";
+      subdir = "p";
+      module = "example.com/app";
+      trimTo = null;
+      lang = "go1.24";
+      isMain = false;
+      goFiles = [ "p.go" "p_test.go" ];
+      sFiles = [ ];
+      embed = { };
+      deps = [ ];
+    };
+    "example.com/app/p.test" = b.compile {
+      name = "gotestpkg-example.com-app-p.test";
+      importPath = "example.com/app/p.test";
+      module = "example.com/app";
+      trimTo = null;
+      lang = "go1.24";
+      isMain = true;
+      testMain = "package main\n\nimport _ \"example.com/app/p\"\n\nfunc main() {}\n";
+      deps = [ testPackages."example.com/app/p [example.com/app/p.test]" testPackages."example.com/app/q [example.com/app/p.test]" ];
+    };
+    "example.com/app/q [example.com/app/p.test]" = b.compile {
+      name = "gotestpkg-example.com-app-q--example.com-app-p.test-";
+      importPath = "example.com/app/q";
+      src = b.localDir { name = "gosrc-example.com-app-q"; files = [ "q/q.go" ]; };
+      subdir = "q";
+      module = "example.com/app";
+      trimTo = "example.com/app/q";
+      lang = "go1.24";
+      isMain = false;
+      goFiles = [ "q.go" ];
+      sFiles = [ ];
+      embed = { };
+      deps = [ testPackages."example.com/app/p [example.com/app/p.test]" ];
+    };
+  };
+  testBins = {
+    "example.com/app/p" = b.link {
+      name = "gotestbin-example.com-app-p";
+      binName = "p.test";
+      main = testPackages."example.com/app/p.test";
+      deps = [ testPackages."example.com/app/p [example.com/app/p.test]" testPackages."example.com/app/q [example.com/app/p.test]" packages."github.com/fatih/color" ];
+      modinfo = "path\texample.com/app/p.test\n";
+      godebug = "x=1";
+      test = true;
+    };
+  };
+  tests = {
+    "example.com/app/p" = b.runTest {
+      name = "gotest-example.com-app-p";
+      importPath = "example.com/app/p";
+      module = "example.com/app";
+      src = testSources."example.com/app/p";
+      subdir = "p";
+      bin = testBins."example.com/app/p";
+      binName = "p.test";
+    };
+  };
+}
+`
+
+func TestNixTestsGolden(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Nix(&buf, testedGraph()); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	i := strings.Index(out, "  testSources = {\n")
+	if i < 0 {
+		t.Fatalf("no testSources in\n%s", out)
+	}
+	if got := out[i:]; got != testsGolden {
+		t.Fatalf("test sets =\n%s\nwant\n%s", got, testsGolden)
+	}
+}
+
+func TestNixTestsEvaluate(t *testing.T) {
+	nix, err := exec.LookPath("nix-instantiate")
+	if err != nil {
+		t.Skip("nix-instantiate not on PATH")
+	}
+	file := filepath.Join(t.TempDir(), "graph.nix")
+	var buf bytes.Buffer
+	if err := Nix(&buf, testedGraph()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Builders that return the node's name, and a test main's source.
+	expr := fmt.Sprintf(`let g = import %s {
+		fetchModule = a: a.name; localDir = a: a.name; link = a: a.name;
+		testDir = a: a.name; runTest = a: a.name;
+		compile = a: if a ? testMain then a.testMain else a.name;
+	}; in { inherit (g) tests testBins; main = g.testPackages."example.com/app/p.test"; }`, file)
+	out, err := exec.Command(nix, "--eval", "--strict", "--json", "-E", expr).Output()
+	if err != nil {
+		t.Fatalf("nix-instantiate: %v", err)
+	}
+	var got struct {
+		Tests    map[string]string `json:"tests"`
+		TestBins map[string]string `json:"testBins"`
+		Main     string            `json:"main"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Tests["example.com/app/p"] != "gotest-example.com-app-p" || got.TestBins["example.com/app/p"] != "gotestbin-example.com-app-p" ||
+		got.Main != testedGraph().TestPackages["example.com/app/p.test"].TestMain {
+		t.Fatalf("evaluated to %+v", got)
 	}
 }
