@@ -1,6 +1,8 @@
 # The integration fixtures, built with the goEnv under test.
 { goEnv, pkgs, mkGoEnv, linuxPkgs }:
 let
+  inherit (pkgs) lib;
+
   # The tests fixture's arguments, which run.sh varies through testsWith.
   testsArgs = {
     pname = "testsfix";
@@ -75,4 +77,8 @@ in
   # Only evaluated: this machine resolves, a Linux machine would build.
   hello-deps-x86_64-linux =
     (mkGoEnv { pkgs = linuxPkgs; evalPkgs = pkgs; }).buildGoApplication helloArgs;
+} // lib.optionalAttrs (pkgs.stdenv.buildPlatform.system == "aarch64-darwin") {
+  # cgo in a cross build. The binary runs here under Rosetta.
+  cgo-x86_64-darwin = (mkGoEnv { pkgs = pkgs.pkgsCross.x86_64-darwin; }).buildGoApplication
+    (cgoArgs pkgs.pkgsCross.x86_64-darwin // { CGO_ENABLED = 1; });
 }

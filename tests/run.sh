@@ -533,6 +533,26 @@ cross_checks() {
   check_eval_pkgs
 }
 
+# check_run_x86_64 <fixture> <binary> <expected stdout>
+# check_run for an x86_64 macOS binary, which runs under Rosetta.
+check_run_x86_64() {
+  if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+    echo "skip: $1: Rosetta is not installed, so $2 cannot run"
+    return
+  fi
+  check_run "$@"
+}
+
+# cgo in a cross build: the cgo fixture for x86_64 macOS, with the cross C
+# toolchain and that platform's libraries. It runs here under Rosetta.
+x86_64_darwin_checks() {
+  check_run_x86_64 cgo-x86_64-darwin cgofix "3 8 7 10 4 4 zstd true saved pure /_/example.com/cgofix/internal/cadd/where.go"
+  check_file_type cgo-x86_64-darwin cgofix "x86_64"
+  check_modinfo_in cgo-x86_64-darwin cgo cgofix . cgoShellX86_64Darwin GOARCH=amd64 CGO_ENABLED=1
+  check_stdenv 'fixtures.cgo-x86_64-darwin.packages."example.com/cgofix/internal/cadd"' true
+  check_stdenv 'fixtures.cgo-x86_64-darwin.bins.cgofix' true
+}
+
 # `tests/run.sh <check or section> [arguments]` runs that alone.
 if [ $# -gt 0 ]; then
   "$@"
@@ -616,6 +636,9 @@ check_incremental tests p/p.go \
   "$tests_builder"
 
 cross_checks
+if [ "$(uname -s)-$(uname -m)" = Darwin-arm64 ]; then
+  x86_64_darwin_checks
+fi
 
 check_exec_error
 check_go_override

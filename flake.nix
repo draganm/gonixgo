@@ -40,6 +40,16 @@
             packages = [ goEnv.go pkgs.pkg-config ];
             buildInputs = [ pkgs.zstd pkgs.lz4 ];
           };
+        } // nixpkgs.lib.optionalAttrs (system == "aarch64-darwin") {
+          # What a plain `go build` of the cgo fixture for x86_64 macOS
+          # needs: the cross C toolchain, pkg-config and the libraries for
+          # that platform.
+          cgoShellX86_64Darwin =
+            let cross = pkgs.pkgsCross.x86_64-darwin;
+            in cross.mkShell {
+              packages = [ goEnv.go cross.pkg-config ];
+              buildInputs = [ cross.zstd cross.lz4 ];
+            };
         });
 
       devShells = eachSystem (system: pkgs: {
