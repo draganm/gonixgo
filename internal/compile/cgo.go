@@ -144,9 +144,13 @@ func runCgo(tc *gotool.Toolchain, m Manifest, workDir string) (goFiles, members 
 		linker = cxxCompiler
 	}
 
-	// The compiler must not record where the source is in the store.
-	rootDir, rootName := trimRoot(m.SrcDir, m.TrimTo)
-	srcMap := cc.PathMap{From: rootDir, To: "/_/" + rootName}
+	// The compiler must not record where the source is in the store,
+	// unless the package is under test and keeps its paths.
+	var srcMap cc.PathMap
+	if m.TrimTo != "" {
+		rootDir, rootName := trimRoot(m.SrcDir, m.TrimTo)
+		srcMap = cc.PathMap{From: rootDir, To: "/_/" + rootName}
+	}
 
 	// Objects are numbered in cmd/go's order, before any compile starts,
 	// so the archive does not depend on which finishes first.

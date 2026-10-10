@@ -1,5 +1,26 @@
 # The integration fixtures, built with the goEnv under test.
 { goEnv, pkgs }:
+let
+  # The tests fixture's arguments, which run.sh varies through testsWith.
+  testsArgs = {
+    pname = "testsfix";
+    src = ./fixtures/tests;
+    subPackages = [ "cmd/app" ];
+    checkFlags = [ "-v" ];
+    nativeCheckInputs = [ pkgs.hello ];
+    checkEnv = { FIXTURE_SCOPE = "program"; FIXTURE_PROGRAM = "1"; };
+    packageOverrides = {
+      "example.com/tests/p" = {
+        testExtraSrc = [ "shared" ];
+        checkFlags = [ "-skip" "TestSkipped" ];
+        nativeCheckInputs = [ pkgs.jq ];
+        checkEnv.FIXTURE_SCOPE = "package";
+      };
+      # The program prints the macro, and cnum's test checks it.
+      "example.com/tests/cnum".env.CGO_CFLAGS = "-O2 -g -DFIXTURE_VALUE=42";
+    };
+  };
+in
 {
   hello-deps = goEnv.buildGoApplication {
     pname = "hello-deps";
@@ -30,4 +51,8 @@
       "example.com/cgofix/internal/lz4".buildInputs = [ pkgs.lz4 ];
     };
   };
+  tests = goEnv.buildGoApplication testsArgs;
+  # The tests fixture with the attributes f returns, given the default
+  # arguments, laid over them.
+  testsWith = f: goEnv.buildGoApplication (testsArgs // f testsArgs);
 }

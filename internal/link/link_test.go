@@ -352,3 +352,75 @@ func TestCgoLinkNeedsTheFlag(t *testing.T) {
 		t.Fatalf("err = %v, want a failed link that says where libraries come from", err)
 	}
 }
+
+// A test binary built as the test nodes build it: the package under test
+// untrimmed, the test main that go list generated, and the link marking
+// it as a test binary. Its test finds testdata through runtime.Caller.
+func TestLinkTestBinary(t *testing.T) {
+	goBin := testutil.Go(t)
+	std := testutil.StdImportcfg(t, goBin)
+	src := testutil.WriteTree(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.21\n",
+		"p/p.go": "package p\n\nfunc One() int { return 1 }\n",
+		"p/p_test.go": `package p
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
+
+func TestCaller(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(file), "testdata", "in.txt"))
+	if err != nil || string(data) != "in" {
+		t.Fatalf("testdata beside %s: %q, %v", file, data, err)
+	}
+	if !testing.Testing() {
+		t.Fatal("testing.Testing() is false")
+	}
+}
+`,
+		"p/testdata/in.txt": "in",
+	})
+	list := exec.Command(goBin, "list", "-test", "-f", `{{if eq .ImportPath "example.com/m/p.test"}}{{index .GoFiles 0}}{{end}}`, "./p")
+	list.Dir = src
+	list.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	file, err := list.Output()
+	if err != nil {
+		t.Fatalf("go list -test: %v", err)
+	}
+	testMain, err := os.ReadFile(strings.TrimSpace(string(file)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pOut, mainOut, binOut := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := compile.Run(compile.Manifest{
+		Go: goBin, ImportPath: "example.com/m/p", SrcDir: filepath.Join(src, "p"), Lang: "go1.21",
+		GoFiles: []string{"p.go", "p_test.go"}, Importcfgs: []string{std},
+	}, pOut, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := compile.Run(compile.Manifest{
+		Go: goBin, ImportPath: "example.com/m/p.test", IsMain: true, Lang: "go1.21", TestMain: string(testMain),
+		Importcfgs: []string{std, filepath.Join(pOut, "importcfg")},
+	}, mainOut, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(Manifest{
+		Go: goBin, BinName: "p.test", Main: filepath.Join(mainOut, "pkg.a"),
+		Importcfgs: []string{std, filepath.Join(mainOut, "importcfg"), filepath.Join(pOut, "importcfg")},
+		Modinfo:    "path\texample.com/m/p.test\nmod\texample.com/m\t(devel)\t\n",
+		Test:       true,
+	}, binOut, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.Command(filepath.Join(binOut, "bin", "p.test"), "-test.v")
+	run.Dir = t.TempDir()
+	if out, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("the test binary failed: %v\n%s", err, out)
+	}
+}

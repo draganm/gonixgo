@@ -35,24 +35,11 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 		SFiles:     p.SFiles,
 		Embed:      embedMap(p.EmbedPatterns, p.EmbedFiles),
 	}
-	for _, imp := range p.Imports {
-		if imp == "C" {
-			// The pseudo-package of cgo. What its generated code imports,
-			// runtime/cgo and syscall, is in the standard library.
-			continue
-		}
-		if mapped, ok := p.ImportMap[imp]; ok {
-			imp = mapped
-		}
-		dep, ok := byPath[imp]
-		if !ok {
-			return nil, nil, fmt.Errorf("%s: imports %s, which go list did not report", p.ImportPath, imp)
-		}
-		if !dep.Standard {
-			pkg.Deps = append(pkg.Deps, imp)
-		}
+	deps, err := deps(p, byPath)
+	if err != nil {
+		return nil, nil, err
 	}
-	sort.Strings(pkg.Deps)
+	pkg.Deps = deps
 	if len(p.CgoFiles) > 0 {
 		pkg.Cgo = &Cgo{
 			PkgName:   p.Name,
@@ -108,6 +95,30 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 		Name:    storepath.SanitizeName("gomod-" + m.Path + "-" + m.Version),
 	}
 	return pkg, mod, nil
+}
+
+// deps returns p's direct non-standard imports, through ImportMap, sorted.
+func deps(p *golist.Package, byPath map[string]*golist.Package) ([]string, error) {
+	var out []string
+	for _, imp := range p.Imports {
+		if imp == "C" {
+			// The pseudo-package of cgo. What its generated code imports,
+			// runtime/cgo and syscall, is in the standard library.
+			continue
+		}
+		if mapped, ok := p.ImportMap[imp]; ok {
+			imp = mapped
+		}
+		dep, ok := byPath[imp]
+		if !ok {
+			return nil, fmt.Errorf("%s: imports %s, which go list did not report", p.ImportPath, imp)
+		}
+		if !dep.Standard {
+			out = append(out, imp)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // unsupported reports the kind of file in p that gonixgo does not build.

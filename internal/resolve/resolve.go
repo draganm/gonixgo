@@ -26,7 +26,7 @@ type Args struct {
 	GOOS        string   `json:"goos"`
 	GOARCH      string   `json:"goarch"`
 	CgoEnabled  *bool    `json:"cgoEnabled"` // nil: Go's default for the target
-	DoCheck     bool     `json:"doCheck"`    // accepted, unused until tests are supported
+	DoCheck     bool     `json:"doCheck"`    // run the -test pass and add the tests
 }
 
 // Options are the parts of the environment Run depends on.
@@ -71,6 +71,21 @@ func Run(a Args, opts Options, stdout io.Writer) error {
 		}
 	}
 
+	// go list needs a build cache, where go list -test also writes the test
+	// mains. With the caller's off, a temporary one serves this run.
+	cache, err := golist.Env(o, "GOCACHE")
+	if err != nil {
+		return err
+	}
+	if cache["GOCACHE"] == "off" {
+		dir, err := os.MkdirTemp("", "gonixgo-gocache-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		o.GOCACHE = dir
+	}
+
 	env, err := golist.Env(o, envKeys...)
 	if err != nil {
 		return err
@@ -88,6 +103,11 @@ func Run(a Args, opts Options, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if a.DoCheck && len(g.Tested) > 0 {
+		if err := addTests(g, o, graph.Input{Src: src, Env: env, Tags: a.Tags, Sums: sums}); err != nil {
+			return err
+		}
+	}
 
 	seeder := modcache.Seeder{
 		StoreDir: a.StoreDir,
@@ -101,6 +121,16 @@ func Run(a Args, opts Options, stdout io.Writer) error {
 		return err
 	}
 	return emit.Nix(stdout, g)
+}
+
+// addTests runs the -test pass over the tested packages of g and adds
+// their tests to it.
+func addTests(g *graph.Graph, o golist.Options, in graph.Input) error {
+	var err error
+	if in.Packages, err = golist.ListTests(o, g.Tested...); err != nil {
+		return err
+	}
+	return g.AddTests(in)
 }
 
 // patterns turns subPackages into go list patterns relative to the module

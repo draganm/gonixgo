@@ -27,8 +27,9 @@ type Manifest struct {
 	Modinfo    string   `json:"modinfo"`    // module info to embed
 	Godebug    string   `json:"godebug"`    // DefaultGODEBUG, "" for none
 	LDFlags    []string `json:"ldflags"`
-	Cgo        bool     `json:"cgo"` // the binary contains a cgo package: link with the C toolchain
-	CXX        bool     `json:"cxx"` // one of its packages has C++ files: the C++ compiler links
+	Cgo        bool     `json:"cgo"`  // the binary contains a cgo package: link with the C toolchain
+	CXX        bool     `json:"cxx"`  // one of its packages has C++ files: the C++ compiler links
+	Test       bool     `json:"test"` // a test binary: testing.Testing reports true
 }
 
 // Run links the binary to outDir/bin/<BinName>.
@@ -72,6 +73,10 @@ func Run(m Manifest, outDir, workDir string) error {
 	}
 	args = append(args, "-buildmode="+mode, "-buildid="+buildID(m))
 	args = append(args, ldflags...)
+	if m.Test {
+		// After the caller's flags, where go test puts it.
+		args = append(args, "-X=testing.testBinary=1")
+	}
 
 	// An empty GOROOT keeps the toolchain's path out of the binary, as
 	// go build -trimpath does.

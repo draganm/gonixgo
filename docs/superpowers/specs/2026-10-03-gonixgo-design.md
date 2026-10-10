@@ -101,15 +101,18 @@ resolves and builds.
 | `tags` | `[ ]` | Build tags. |
 | `ldflags` | `[ ]` | Passed to `go tool link`. |
 | `CGO_ENABLED` | `null` | `null` means Go's own default for the target. |
-| `doCheck` | `true` | Build and run tests of local packages. |
-| `checkFlags` | `[ ]` | Passed to every test binary. |
+| `doCheck` | `true` | Build and run the tests of the program's packages. |
+| `checkFlags` | `[ ]` | Flags for every test, spelt as for `go test`. |
+| `nativeCheckInputs` | `[ ]` | Tools on every test's `PATH`. |
+| `checkEnv` | `{ }` | Environment variables for every test. |
 | `packageOverrides` | `{ }` | See [cgo](#cgo) and [Tests](#tests). |
 | `meta` | `{ }` | Passed through. |
 
 The result puts each binary in `$out/bin`, named as `go build` names it: the
 last element of the main package's import path, skipping a major-version
 suffix such as `/v2`. `pname` does not affect binary names.
-`passthru` exposes `graph`, `modules`, `packages`, `bins` and `tests`.
+`passthru` exposes `graph`, `modules`, `packages`, `bins`, `tests` and
+`testBins`.
 
 ## Components
 
@@ -124,7 +127,7 @@ dependency hash.
 | `resolve <json>` | at evaluation, via `builtins.exec` | Runs `go list`, hashes and pre-seeds modules, prints the graph as Nix. |
 | `compile` | in a derivation | Compiles one package from a JSON manifest. |
 | `link` | in a derivation | Writes module info and links one binary. |
-| `test` | in a derivation | Compiles, links and runs one package's tests. |
+| `test` | in a derivation | Runs one package's test binary. |
 | `fetch` | in a fixed-output derivation | Fallback module download. |
 
 Build-time subcommands read a manifest written by the builder functions.
@@ -135,8 +138,9 @@ environment; `fetch` reads it from the `manifest` environment variable.
 ### 2. The static Nix library
 
 `nix/` holds `mkGoEnv` and the builder functions the generated code calls:
-`fetchModule`, `localDir`, `compile`, `link`, `test`. Each defines how one kind
-of node is built. All graph wiring is in the generated code.
+`fetchModule`, `localDir`, `compile`, `link`, `testDir`, `runTest`. Each
+defines how one kind of node is built. All graph wiring is in the generated
+code.
 
 ### 3. The generated graph
 
@@ -190,21 +194,39 @@ b: rec {
     godebug = "…";
   };
 
-  tests."example.com/app" = b.test {
+  testSources."example.com/app" = b.testDir {
+    name = "gosrc-test-example.com-app";
     importPath = "example.com/app";
-    src = b.localDir {
-      name = "gosrc-test-example.com-app";
-      files = [ "main.go" "main_test.go" "cli_test.go" ];
-      trees = [ "testdata" ];
-    };
     module = "example.com/app";
-    lang = "go1.24";
-    goFiles = [ "main.go" ];
-    testGoFiles = [ "main_test.go" ];   # package main
-    xTestGoFiles = [ "cli_test.go" ];   # package main_test
-    deps = [ packages."github.com/fatih/color" ];
-    testDeps = [ packages."github.com/stretchr/testify/assert" ];
-    recompile = [ ];
+    files = [ "cli_test.go" "main.go" "main_test.go" ];
+    trees = [ "testdata" ];
+  };
+
+  # The package with its internal tests (main_test.go, package main), the
+  # external test package (cli_test.go, package main_test) and the test
+  # main. The external test's testify is an ordinary packages node.
+  testPackages."example.com/app [example.com/app.test]" = b.compile { /* … */ };
+  testPackages."example.com/app_test [example.com/app.test]" = b.compile { /* … */ };
+  testPackages."example.com/app.test" = b.compile { /* … */ };
+
+  testBins."example.com/app" = b.link {
+    name = "gotestbin-example.com-app";
+    binName = "app.test";
+    main = testPackages."example.com/app.test";
+    deps = [ /* transitive closure, standard library excluded */ ];
+    modinfo = "…";
+    godebug = "…";
+    test = true;
+  };
+
+  tests."example.com/app" = b.runTest {
+    name = "gotest-example.com-app";
+    importPath = "example.com/app";
+    module = "example.com/app";
+    src = testSources."example.com/app";
+    subdir = "";
+    bin = testBins."example.com/app";
+    binName = "app.test";
   };
 }
 ```
@@ -216,13 +238,9 @@ to. File lists in `localDir` are relative to the source root.
 
 Fields a `compile` node may carry beyond those shown: `sFiles`, `embed`
 (pattern to file list) and, for a cgo package, `cgo`, which the
-[cgo design](2026-10-05-cgo-design.md) describes. A `test` node carries the
-same optional fields, plus `testEmbed` and `xTestEmbed`.
-
-In a `test` node, `deps` are the package's own direct imports, `testDeps` are
-the direct imports its test files add, and `recompile` lists the local
-packages that must be rebuilt against the test archive, each as
-`{ importPath; src; goFiles; deps; … }`.
+[cgo design](2026-10-05-cgo-design.md) describes. A `compile` node in
+`testPackages` may also have `trimTo = null` and carry `testMain`; the
+[tests design](2026-10-10-tests-design.md) describes the four test sets.
 
 `deps` lists direct imports only. The standard library is not a node; every
 builder takes it from `b.stdlib cgoEnabled`. `cgoEnabled` is the resolved
@@ -255,7 +273,7 @@ and builders cannot drift and carries no version number.
    Nix builds the tool and Go first if they are not in the store.
 3. The tool runs `go list -e -deps -json` for `subPackages` in
    `src/modRoot`. Under `doCheck` a second `go list -e -deps -test -json`
-   pass covers the local packages found by the first.
+   pass covers the main-module packages with tests that the first found.
 4. It classifies each package as standard library, third-party (owned by a
    fetched module) or local (main module, or a module replaced with a
    directory).
@@ -336,7 +354,9 @@ packages keep import paths under `a`.
 | `compile`, third-party | `gopkg-<import path>-<version>` | package |
 | `compile`, local | `golocal-<import path>` | package |
 | `link` | `gobin-<name>` | main package |
-| `test` | `gotest-<import path>` | local package with tests |
+| `compile`, test | `gotestpkg-<go list import path>` | test variant, recompiled dependent or test main |
+| `link`, test | `gotestbin-<import path>` | tested package |
+| `runTest` | `gotest-<import path>` | tested package |
 | application | `<pname>[-<version>]` | `buildGoApplication` call |
 
 ### `stdlib`
@@ -362,7 +382,8 @@ package.
 - Embeds: an embedcfg built from the patterns and files `go list` reported.
 - `-trimpath` rewrites the source directory to the import path for
   main-module packages and to `<module>@<version>/<subdir>` otherwise, and the
-  build directory to nothing.
+  build directory to nothing. A package under test and its test files keep
+  their source directory; see [Tests](#tests).
 
 Pure-Go packages are a bare `derivation` whose builder is the tool. They do not
 use stdenv.
@@ -429,39 +450,43 @@ target and reports the result as the graph's `cgoEnabled`. When cgo is off,
 
 ## Tests
 
-One test derivation per local package that has test files and is reachable
-from `subPackages`, including packages of sibling modules behind a directory
-`replace`. Third-party packages are not tested. Local helper packages that only
-tests import are compiled but their own tests are not run.
+The [tests design](2026-10-10-tests-design.md) has the details; this is the
+outline.
 
-For package `P` the `test` subcommand:
+The tests of every main-module package that the program's binaries contain
+and that has test files are built and run. Packages of other modules,
+third-party ones included, are not tested, nor are local packages that only
+tests import.
 
-1. Compiles the internal test archive: `P`'s files plus its `_test.go` files
-   in package `P`.
-2. Recompiles, inside the same derivation, any local package that the external
-   test imports and that itself imports `P`, against the archive from step 1.
-   `go list -test` reports these as `Q [P.test]`.
-3. Compiles the external test package `P_test`.
-4. Generates the test main, registering `Test*`, `Benchmark*`, `Fuzz*` and
-   `Example*` functions.
-5. Links and runs the test binary with `checkFlags`, in a directory laid out
-   as `P`'s path relative to `src`.
+For a package `P`, `go list -test` reports the pieces of its test binary,
+and each piece is a node:
 
-The output is the test log.
+1. `P [P.test]`: `P`'s files and its internal test files, compiled together.
+2. `Q [P.test]`: each package of the test binary that imports `P`, directly
+   or not, recompiled against the first.
+3. `P_test [P.test]`: the external test package.
+4. `P.test`: the test main, from the source `go list` generated.
 
-Test-only third-party packages and local helper packages imported only by
-tests are ordinary `packages` nodes that only test nodes reference.
+They are `testPackages` nodes built by `b.compile`. The test binary is a
+`testBins` node built by `b.link`. A `tests` node built by `b.runTest` runs
+it with `gonixgo test`, and its output is the test log. Test-only
+third-party packages and local helper packages are ordinary `packages`
+nodes.
 
-**File visibility.** A test sees its package's files and everything under its
-`testdata/`. This differs from go2nix, which gives tests a filtered copy of
-the whole source and so reruns them on any change. Tests that read files
-elsewhere declare them:
+**File visibility.** A test runs in a writable copy of its package's files,
+test files and `testdata/`, laid out as in `src`. The package and its test
+files compile from the store copy of the same tree without rewriting their
+source directory, so paths from `runtime.Caller` name real files. This
+differs from go2nix, which gives tests a filtered copy of the whole source
+and so reruns them on any change. Tests that read files elsewhere declare
+them:
 
 ```nix
 packageOverrides."example.com/app/internal/web".testExtraSrc = [ "fixtures" ];
 ```
 
-Paths are relative to `src` and are included as trees.
+Paths are relative to `src` and are included as trees. Entries also take
+`nativeCheckInputs`, `checkFlags` and `checkEnv` for that package's tests.
 
 Tests are skipped when the build platform cannot execute the target.
 
@@ -510,9 +535,10 @@ non-zero. Nix then reports that the program failed.
 ## Not in this version
 
 `go.work` (forced off), `vendor/` directories (ignored; modules come from the
-module cache), PGO, `gcflags`, the race detector, coverage, content-addressed
-derivations, `GOEXPERIMENT`/`GOFIPS140` configuration, and SWIG, Fortran and
-`.syso` files. `.syso` support may be added later.
+module cache), PGO, `gcflags`, the race detector, coverage, vet and fuzzing in
+tests, `test2json` output, content-addressed derivations,
+`GOEXPERIMENT`/`GOFIPS140` configuration, and SWIG, Fortran and `.syso`
+files. `.syso` support may be added later.
 
 ## Testing gonixgo
 
@@ -524,7 +550,7 @@ derivations, `GOEXPERIMENT`/`GOFIPS140` configuration, and SWIG, Fortran and
   output.
 - The Nix emitter, with golden files.
 - Module info generation against `go version -m` output.
-- Test-main generation.
+- The test runner: flag translation, environment, timeout.
 
 ### Integration fixtures
 
@@ -537,7 +563,7 @@ they need `exec` and the network.
 | `hello-deps` | Pure Go, several local packages, third-party dependencies. |
 | `asm-embed` | Assembly and `go:embed`. |
 | `cgo` | A cgo package with a library from `packageOverrides`. |
-| `tests` | Internal and external tests, a test-only dependency, `testdata`. |
+| `tests` | Internal and external tests, a test-only dependency, `testdata`, `testExtraSrc` and the check settings. |
 | `monorepo` | `modRoot`, a sibling module behind a directory `replace`. |
 | `cross` | A Linux arm64 build. |
 
@@ -569,7 +595,7 @@ internal/compile/    compile, assembly, embeds, cgo
 internal/cc/         the C compiler as cmd/go drives it
 internal/link/       importcfg, link
 internal/fetch/      the fallback module download
-internal/gotest/     test variants, test main, runner
+internal/testrun/    running a test binary
 nix/                 mk-go-env.nix, tool.nix, stdlib.nix, builders.nix, build-go-application.nix
 tests/fixtures/      integration fixtures
 tests/run.sh         integration driver
@@ -586,7 +612,8 @@ tests/run.sh         integration driver
    Fixture `cgo`. Built before stage 2; see the
    [cgo design](2026-10-05-cgo-design.md).
 4. **Tests.** The `-test` pass, test nodes, test main, `testExtraSrc`,
-   `doCheck`. Fixture `tests`.
+   `doCheck`. Fixture `tests`. See the
+   [tests design](2026-10-10-tests-design.md).
 
 Each stage ends with its fixtures passing, and each gets its own
 implementation plan, written when the previous stage is done. The first plan

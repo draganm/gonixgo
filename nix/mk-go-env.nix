@@ -44,6 +44,8 @@ let
     inherit lib go evalTool goos goarch;
     evalGo = evalGo';
     inherit (buildPkgs) runCommand;
+    # Whether the build platform can run the tests.
+    inherit (pkgs) stdenv;
     mkBuilders = builders;
   };
 in

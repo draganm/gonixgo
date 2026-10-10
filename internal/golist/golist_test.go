@@ -1,6 +1,7 @@
 package golist
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -193,5 +194,97 @@ func TestModuleEnvCarriesModuleSources(t *testing.T) {
 		if env[k] != v {
 			t.Errorf("Env with ModuleEnv: %s = %q, want %q", k, env[k], v)
 		}
+	}
+}
+
+// testedFiles is a module whose package p has internal and external
+// tests, each with an embed; p's external test imports q, which imports p.
+var testedFiles = map[string]string{
+	"go.mod": "module example.com/m\n\ngo 1.21\n",
+	"p/p.go": "package p\n\nfunc One() int { return 1 }\n",
+	"p/p_test.go": `package p
+
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed testdata/in.txt
+var in string
+
+func TestOne(t *testing.T) {}
+`,
+	"p/x_test.go": `package p_test
+
+import (
+	_ "embed"
+	"testing"
+
+	"example.com/m/q"
+)
+
+//go:embed testdata/x.txt
+var x string
+
+func TestTwo(t *testing.T) { _ = q.Two() }
+`,
+	"p/testdata/in.txt": "in",
+	"p/testdata/x.txt":  "x",
+	"q/q.go":            "package q\n\nimport \"example.com/m/p\"\n\nfunc Two() int { return 2 * p.One() }\n",
+}
+
+func TestListTests(t *testing.T) {
+	goBin := testutil.Go(t)
+	dir := testutil.WriteTree(t, testedFiles)
+
+	pkgs, err := ListTests(Options{Go: goBin, Dir: dir}, "example.com/m/p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := index(pkgs)
+
+	p := by["example.com/m/p"]
+	if !reflect.DeepEqual(p.TestGoFiles, []string{"p_test.go"}) || !reflect.DeepEqual(p.XTestGoFiles, []string{"x_test.go"}) {
+		t.Errorf("p test files = %v %v", p.TestGoFiles, p.XTestGoFiles)
+	}
+	if !reflect.DeepEqual(p.TestEmbedPatterns, []string{"testdata/in.txt"}) || !reflect.DeepEqual(p.XTestEmbedPatterns, []string{"testdata/x.txt"}) {
+		t.Errorf("p test embeds = %v %v", p.TestEmbedPatterns, p.XTestEmbedPatterns)
+	}
+	for _, ip := range []string{
+		"example.com/m/p [example.com/m/p.test]",
+		"example.com/m/q [example.com/m/p.test]",
+		"example.com/m/p_test [example.com/m/p.test]",
+	} {
+		if got := by[ip].ForTest; got != "example.com/m/p" {
+			t.Errorf("%s: ForTest = %q, want example.com/m/p", ip, got)
+		}
+	}
+	main, ok := by["example.com/m/p.test"]
+	if !ok || main.Name != "main" || main.ForTest != "" || len(main.GoFiles) != 1 {
+		t.Fatalf("test main = %+v", main)
+	}
+	src, err := os.ReadFile(main.GoFiles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(src, []byte("testing.MainStart")) {
+		t.Errorf("test main source:\n%s", src)
+	}
+}
+
+// go list -test writes each test main into the build cache; a private one
+// works too, which resolve uses when the caller's is off.
+func TestListTestsWithPrivateCache(t *testing.T) {
+	goBin := testutil.Go(t)
+	dir := testutil.WriteTree(t, testedFiles)
+	cache := t.TempDir()
+
+	pkgs, err := ListTests(Options{Go: goBin, Dir: dir, GOCACHE: cache}, "example.com/m/p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := index(pkgs)["example.com/m/p.test"]
+	if len(main.GoFiles) != 1 || !strings.HasPrefix(main.GoFiles[0], cache) {
+		t.Fatalf("test main files = %v, want one under %s", main.GoFiles, cache)
 	}
 }
