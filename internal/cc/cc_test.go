@@ -204,7 +204,7 @@ func TestArchArgs(t *testing.T) {
 // test when there is none.
 func realCompiler(t *testing.T, probeDir string) *Compiler {
 	t.Helper()
-	tc, err := gotool.New(testutil.Go(t), "", "", t.TempDir())
+	tc, err := gotool.New(testutil.Go(t), "", "", "", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

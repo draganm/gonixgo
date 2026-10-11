@@ -1,6 +1,6 @@
 # buildGoApplication resolves the package graph during evaluation, through
 # builtins.exec, and turns it into derivations.
-{ lib, runCommand, stdenv, go, evalGo, evalTool, mkBuilders, goos, goarch }:
+{ lib, runCommand, stdenv, go, evalGo, evalTool, mkBuilders, goos, goarch, goarm }:
 
 { pname
 , version ? null
@@ -40,8 +40,10 @@ let
       go = "${evalGo}/bin/go";
       src = srcStr;
       inherit (builtins) storeDir;
-      inherit modRoot subPackages tags goos goarch;
+      inherit modRoot subPackages tags goos goarch goarm;
       doCheck = runTests;
+      # A build for another platform: cgo is off there unless asked for.
+      cross = stdenv.buildPlatform != stdenv.hostPlatform;
       cgoEnabled =
         if CGO_ENABLED == null then null
         else builtins.elem CGO_ENABLED [ 1 "1" true ];

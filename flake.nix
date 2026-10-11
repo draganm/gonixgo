@@ -28,13 +28,28 @@
         let goEnv = mkGoEnv { inherit pkgs; };
         in {
           inherit goEnv;
-          fixtures = import ./tests/fixtures.nix { inherit goEnv pkgs; };
+          fixtures = import ./tests/fixtures.nix {
+            inherit goEnv pkgs mkGoEnv;
+            # A platform this machine cannot build for, so that evalPkgs
+            # is needed to resolve it.
+            linuxPkgs = nixpkgs.legacyPackages.x86_64-linux;
+          };
           # What a plain `go build` of the cgo fixture needs; the
           # integration tests build their reference binary in it.
           cgoShell = pkgs.mkShell {
             packages = [ goEnv.go pkgs.pkg-config ];
             buildInputs = [ pkgs.zstd pkgs.lz4 ];
           };
+        } // nixpkgs.lib.optionalAttrs (system == "aarch64-darwin") {
+          # What a plain `go build` of the cgo fixture for x86_64 macOS
+          # needs: the cross C toolchain, pkg-config and the libraries for
+          # that platform.
+          cgoShellX86_64Darwin =
+            let cross = pkgs.pkgsCross.x86_64-darwin;
+            in cross.mkShell {
+              packages = [ goEnv.go cross.pkg-config ];
+              buildInputs = [ cross.zstd cross.lz4 ];
+            };
         });
 
       devShells = eachSystem (system: pkgs: {

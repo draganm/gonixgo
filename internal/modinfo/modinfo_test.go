@@ -1,6 +1,7 @@
 package modinfo
 
 import (
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"testing"
@@ -77,5 +78,43 @@ func TestWrap(t *testing.T) {
 	got := strconv.Quote(Wrap(goldenInfo))
 	if !strings.HasPrefix(got, wantPrefix) || !strings.HasSuffix(got, wantSuffix) {
 		t.Fatalf("Quote(Wrap(info)) = %s", got)
+	}
+}
+
+// toDebug converts m to the runtime/debug form.
+func toDebug(m Module) *debug.Module {
+	d := &debug.Module{Path: m.Path, Version: m.Version, Sum: m.Sum}
+	if m.Replace != nil {
+		d.Replace = toDebug(*m.Replace)
+	}
+	return d
+}
+
+// Replaced modules come out as runtime/debug writes them, which is what
+// go build embeds: the dep line without a sum, the => line, an empty line.
+func TestStringWithReplacements(t *testing.T) {
+	info := Info{
+		Path: "example.com/app",
+		Main: Module{Path: "example.com/app", Version: "(devel)"},
+		Deps: []Module{
+			{Path: "example.com/lib", Version: "v0.0.0-00010101000000-000000000000", Replace: &Module{Path: "../lib", Version: "(devel)"}},
+			{Path: "github.com/a/b", Version: "v1.0.0", Replace: &Module{Path: "github.com/fork/b", Version: "v1.0.1", Sum: "h1:fork"}},
+			{Path: "github.com/c/d", Version: "v2.0.0", Sum: "h1:cd"},
+		},
+		Settings: Settings(goldenEnv, nil, ""),
+	}
+	bi := debug.BuildInfo{Path: info.Path, Main: *toDebug(info.Main)}
+	for _, d := range info.Deps {
+		bi.Deps = append(bi.Deps, toDebug(d))
+	}
+	for _, s := range info.Settings {
+		bi.Settings = append(bi.Settings, debug.BuildSetting{Key: s.Key, Value: s.Value})
+	}
+	got := info.String()
+	if want := bi.String(); got != want {
+		t.Fatalf("String() =\n%q\nwant what runtime/debug writes:\n%q", got, want)
+	}
+	if want := "dep\texample.com/lib\tv0.0.0-00010101000000-000000000000\n=>\t../lib\t(devel)\t\n\n"; !strings.Contains(got, want) {
+		t.Errorf("String() lacks %q:\n%q", want, got)
 	}
 }

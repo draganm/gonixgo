@@ -135,11 +135,9 @@ func newTestPackage(p *golist.Package, src string, byPath map[string]*golist.Pac
 		pkg.TrimTo, pkg.TestSrc = "", p.ForTest
 		pkg.SrcName, pkg.SrcFiles, pkg.SrcTrees = "", nil, nil
 	default:
+		pkg.TrimTo = trimTo(p.Module, base)
 		if pkg.Local {
 			pkg.SrcName = storepath.SanitizeName("gosrc-" + base)
-			pkg.TrimTo = base
-		} else {
-			pkg.TrimTo = pkg.ModuleKey + strings.TrimPrefix(base, pkg.ModulePath)
 		}
 	}
 	return pkg, mod, nil

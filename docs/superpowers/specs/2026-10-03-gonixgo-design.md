@@ -77,8 +77,8 @@ Non-flake use: `import gonixgo { inherit pkgs; }` returns the same set as
 | Argument | Default | Meaning |
 |---|---|---|
 | `pkgs` | required | The nixpkgs instance. Target platform is `pkgs.stdenv.hostPlatform`. |
-| `go` | `pkgs.buildPackages.go` | Toolchain used inside derivations. |
-| `evalPkgs` | `null` | Package set whose tool runs on the evaluating machine; `null` means `pkgs.buildPackages`. Override only when the evaluating machine differs from the build platform. |
+| `go` | `pkgs.pkgsBuildBuild.go` | Toolchain used inside derivations; it runs on the build platform. |
+| `evalPkgs` | `null` | Package set whose tool runs on the evaluating machine; `null` means `pkgs.pkgsBuildBuild`. Override only when the evaluating machine differs from the build platform. |
 | `evalGo` | `null` | Go that runs `go list` on the evaluating machine; `null` means `evalPkgs.go` when `evalPkgs` is given, otherwise `go`. |
 
 Returns `{ buildGoApplication, tool, go, stdlib, builders }`. `stdlib` is a
@@ -100,7 +100,7 @@ resolves and builds.
 | `subPackages` | `[ "." ]` | Main packages to link, relative to `modRoot`. |
 | `tags` | `[ ]` | Build tags. |
 | `ldflags` | `[ ]` | Passed to `go tool link`. |
-| `CGO_ENABLED` | `null` | `null` means Go's own default for the target. |
+| `CGO_ENABLED` | `null` | `null` means Go's own default for the target; in a cross build, off. |
 | `doCheck` | `true` | Build and run the tests of the program's packages. |
 | `checkFlags` | `[ ]` | Flags for every test, spelt as for `go test`. |
 | `nativeCheckInputs` | `[ ]` | Tools on every test's `PATH`. |
@@ -349,7 +349,7 @@ packages keep import paths under `a`.
 
 | Kind | Name | One per |
 |---|---|---|
-| `stdlib` | `go-stdlib-<version>-<goos>-<goarch>[-cgo]` | Go version, target, cgo setting |
+| `stdlib` | `go-stdlib-<version>-<goos>-<goarch>[v<goarm>][-cgo]` | Go version, target, ARM version, cgo setting |
 | `fetchModule` | `gomod-<path>-<version>` | module version |
 | `compile`, third-party | `gopkg-<import path>-<version>` | package |
 | `compile`, local | `golocal-<import path>` | package |
@@ -492,12 +492,15 @@ Tests are skipped when the build platform cannot execute the target.
 
 ## Cross-compilation
 
-`GOOS` and `GOARCH` come from `go.GOOS` and `go.GOARCH`, which nixpkgs derives
-from the target platform. They go to the resolver, so file lists and build
-constraints match the target, and to every derivation.
+`GOOS`, `GOARCH` and `GOARM` come from `pkgs.stdenv.hostPlatform.go`. They go
+to the resolver, so file lists and build constraints match the target, and to
+every derivation.
 
-Derivations run on the build platform with `pkgs.buildPackages.go`. cgo
-packages use the cross C compiler from `pkgs.stdenv.cc`.
+Derivations run on the build platform with `pkgs.pkgsBuildBuild.go`, the
+native Go. cgo is off in a cross build unless `CGO_ENABLED = 1`; cgo packages
+then use the cross C compiler from `pkgs.stdenv.cc`. The
+[cross-compilation and monorepo design](2026-10-10-cross-monorepo-design.md)
+has the details.
 
 The resolver runs on the evaluating machine. When that is not the build
 platform, for example building Linux packages from a Mac through a remote
@@ -564,8 +567,8 @@ they need `exec` and the network.
 | `asm-embed` | Assembly and `go:embed`. |
 | `cgo` | A cgo package with a library from `packageOverrides`. |
 | `tests` | Internal and external tests, a test-only dependency, `testdata`, `testExtraSrc` and the check settings. |
-| `monorepo` | `modRoot`, a sibling module behind a directory `replace`. |
-| `cross` | A Linux arm64 build. |
+| `monorepo` | `modRoot`, a sibling module behind a directory `replace`, and a version `replace`. |
+| `cross` | Linux arm64 and ARMv6 builds, cgo for x86_64 macOS, and a build for x86_64-linux resolved through `evalPkgs`. |
 
 Each fixture asserts:
 

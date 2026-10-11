@@ -32,23 +32,31 @@ check_run() {
 # whose reference build needs libraries names the flake's shell that has
 # them.
 check_modinfo() {
-  local out go tmp
+  check_modinfo_in "$1" "$1" "$2" "$3" "${4:--}"
+}
+
+# check_modinfo_in <fixture> <directory under tests/fixtures> <binary> <main package> <shell, or -> [VAR=value...]
+# check_modinfo for a fixture built from another directory, or whose
+# reference build needs settings, such as a cross target's.
+check_modinfo_in() {
+  local fixture="$1" dir="$2" binary="$3" main="$4" shell="$5" out go tmp
+  shift 5
   local -a in_shell=()
-  out="$(build "fixtures.$1")"
-  go="$(build "fixtures.$1.go")/bin/go"
-  if [ -n "${4:-}" ]; then
-    in_shell=(nix develop "$flake#$4" --command)
+  out="$(build "fixtures.$fixture")"
+  go="$(build "fixtures.$fixture.go")/bin/go"
+  if [ "$shell" != - ]; then
+    in_shell=(nix develop "$flake#$shell" --command)
   fi
   tmp="$(mktemp -d)"
-  (cd "$root/tests/fixtures/$1" &&
-    GOFLAGS=-mod=readonly GOWORK=off GOTOOLCHAIN=local \
-      ${in_shell[@]+"${in_shell[@]}"} "$go" build -trimpath -buildvcs=false -o "$tmp/ref" "$3")
-  if ! diff <("$go" version -m "$out/bin/$2" | tail -n +2) <("$go" version -m "$tmp/ref" | tail -n +2); then
+  (cd "$root/tests/fixtures/$dir" &&
+    env GOFLAGS=-mod=readonly GOWORK=off GOTOOLCHAIN=local "$@" \
+      ${in_shell[@]+"${in_shell[@]}"} "$go" build -trimpath -buildvcs=false -o "$tmp/ref" "$main")
+  if ! diff <("$go" version -m "$out/bin/$binary" | tail -n +2) <("$go" version -m "$tmp/ref" | tail -n +2); then
     rm -rf "$tmp"
-    fail "$1: $2 module info differs from go build -trimpath (left: gonixgo, right: go build)"
+    fail "$fixture: $binary module info differs from go build -trimpath (left: gonixgo, right: go build)"
   fi
   rm -rf "$tmp"
-  echo "ok: $1: $2 module info matches go build"
+  echo "ok: $fixture: $binary module info matches go build"
 }
 
 # check_distinct_build_ids <fixture> <binary> <binary>
@@ -411,6 +419,198 @@ check_test_override_unmatched() {
   echo "ok: tests: test attributes no tested package takes are warned about, and only with tests"
 }
 
+# check_file_type <fixture> <binary> <text that file(1) prints for it>
+# A cross build's binary is for the target.
+check_file_type() {
+  local out got
+  out="$(build "fixtures.$1")"
+  got="$(file -b "$out/bin/$2")"
+  case "$got" in
+    *"$3"*) echo "ok: $1: $2 is $3" ;;
+    *) fail "$1: $2 is '$got', want '$3'" ;;
+  esac
+}
+
+# check_native_go <pkgsCross attribute>
+# A cross build runs the cached native Go and tool, not ones built for the
+# target. Nothing is built.
+check_native_go() {
+  local got
+  got="$(nix eval --impure --raw --expr "
+    let
+      flake = builtins.getFlake \"$flake\";
+      pkgs = flake.inputs.nixpkgs.legacyPackages.\${builtins.currentSystem};
+      env = flake.lib.mkGoEnv { pkgs = pkgs.pkgsCross.$1; };
+      native = flake.legacyPackages.\${builtins.currentSystem}.goEnv;
+    in builtins.toJSON (env.go.drvPath == native.go.drvPath && env.tool.drvPath == native.tool.drvPath)")" ||
+    fail "pkgsCross.$1: mkGoEnv does not evaluate"
+  [ "$got" = true ] || fail "pkgsCross.$1: mkGoEnv's Go or tool is not the native one"
+  echo "ok: pkgsCross.$1: mkGoEnv builds with the native Go and tool"
+}
+
+# check_stdlib_name <pkgsCross attribute> <end of the standard library's name>
+check_stdlib_name() {
+  local got
+  got="$(nix eval --impure --raw --expr "
+    let flake = builtins.getFlake \"$flake\";
+    in ((flake.lib.mkGoEnv { pkgs = flake.inputs.nixpkgs.legacyPackages.\${builtins.currentSystem}.pkgsCross.$1; }).stdlib false).name")" ||
+    fail "pkgsCross.$1: the standard library does not evaluate"
+  case "$got" in
+    *-"$2") echo "ok: pkgsCross.$1: the standard library is $got" ;;
+    *) fail "pkgsCross.$1: the standard library is $got, want a name ending in -$2" ;;
+  esac
+}
+
+# A Go that runs on the target instead of the build platform is refused,
+# with the fix. riscv64 is a target no build machine here can run.
+check_go_runs_on_build_platform() {
+  local msg
+  if msg="$(nix eval --impure --raw --expr "
+    let
+      flake = builtins.getFlake \"$flake\";
+      cross = flake.inputs.nixpkgs.legacyPackages.\${builtins.currentSystem}.pkgsCross.riscv64;
+    in (flake.lib.mkGoEnv { pkgs = cross; go = cross.go; }).go.version" 2>&1)"; then
+    fail "mkGoEnv accepted a Go that runs on the target"
+  fi
+  case "$msg" in
+    *'pkgs.pkgsBuildBuild'*) echo "ok: mkGoEnv refuses a Go that does not run on the build platform" ;;
+    *) fail "mkGoEnv: unhelpful error for a Go that runs on the target: $msg" ;;
+  esac
+}
+
+# check_goarm <fixture> <GOARM>
+# The ARM version reaches every compile and link.
+check_goarm() {
+  local got
+  got="$(nix eval "${exec_opt[@]}" --raw "$flake#fixtures.$1" --apply '
+    app: builtins.concatStringsSep " " (map (d: d.manifest.goarm or "none")
+      (builtins.attrValues app.packages ++ builtins.attrValues app.bins))')" ||
+    fail "$1 does not evaluate"
+  [ "$(tr ' ' '\n' <<<"$got" | sort -u)" = "$2" ] || fail "$1: the manifests have GOARM [$got], want $2 in each"
+  echo "ok: $1: every compile and link has GOARM=$2"
+}
+
+# A cross build leaves cgo off unless asked for, and a package that needs
+# it says how to turn it on. Nothing is built.
+check_cross_cgo_off() {
+  local msg
+  if msg="$(nix eval "${exec_opt[@]}" --raw "$flake#fixtures.cgo-aarch64-linux.drvPath" 2>&1)"; then
+    fail "cgo-aarch64-linux: evaluated, so cgo was on"
+  fi
+  case "$msg" in
+    *'cgo is off in a cross build; set CGO_ENABLED = 1 to build cgo packages'*)
+      echo "ok: cgo-aarch64-linux: cgo is off, and the error says how to turn it on" ;;
+    *) fail "cgo-aarch64-linux: unhelpful error: $msg" ;;
+  esac
+}
+
+# With evalPkgs this machine resolves a build for a platform it cannot
+# build for. Nothing is built.
+check_eval_pkgs() {
+  local got
+  got="$(nix eval "${exec_opt[@]}" --raw "$flake#fixtures.hello-deps-x86_64-linux" --apply '
+    app: builtins.concatStringsSep " " (builtins.attrNames (builtins.listToAttrs (map (d: { name = d.system; value = true; })
+      ([ app ] ++ builtins.attrValues app.packages ++ builtins.attrValues app.bins))))')" ||
+    fail "hello-deps-x86_64-linux does not evaluate"
+  [ "$got" = x86_64-linux ] || fail "hello-deps-x86_64-linux: derivations for [$got], want [x86_64-linux]"
+  echo "ok: hello-deps-x86_64-linux: resolved here, every derivation for x86_64-linux"
+}
+
+# Cross builds: the native Go builds, the target comes from pkgs. Nothing
+# built here runs on this machine, so the checks read the binaries.
+# The reference builds set CGO_ENABLED=0: nixpkgs' Go would turn it on.
+cross_checks() {
+  check_native_go aarch64-multiplatform
+  check_stdlib_name raspberryPi linux-armv6
+  check_go_runs_on_build_platform
+  check_file_type hello-deps-aarch64-linux hello "ARM aarch64"
+  check_modinfo_in hello-deps-aarch64-linux hello-deps hello . - GOOS=linux GOARCH=arm64 CGO_ENABLED=0
+  check_no_source_refs hello-deps-aarch64-linux
+  check_file_type hello-deps-armv6l-linux hello "ELF 32-bit LSB executable, ARM"
+  check_modinfo_in hello-deps-armv6l-linux hello-deps hello . - GOOS=linux GOARCH=arm GOARM=6 CGO_ENABLED=0
+  check_goarm hello-deps-armv6l-linux 6
+  check_cross_cgo_off
+  check_eval_pkgs
+}
+
+# check_run_x86_64 <fixture> <binary> <expected stdout>
+# check_run for an x86_64 macOS binary, which runs under Rosetta.
+check_run_x86_64() {
+  if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+    echo "skip: $1: Rosetta is not installed, so $2 cannot run"
+    return
+  fi
+  check_run "$@"
+}
+
+# cgo in a cross build: the cgo fixture for x86_64 macOS, with the cross C
+# toolchain and that platform's libraries. It runs here under Rosetta.
+x86_64_darwin_checks() {
+  check_run_x86_64 cgo-x86_64-darwin cgofix "3 8 7 10 4 4 zstd true saved pure /_/example.com/cgofix/internal/cadd/where.go"
+  check_file_type cgo-x86_64-darwin cgofix "x86_64"
+  check_modinfo_in cgo-x86_64-darwin cgo cgofix . cgoShellX86_64Darwin GOARCH=amd64 CGO_ENABLED=1
+  check_stdenv 'fixtures.cgo-x86_64-darwin.packages."example.com/cgofix/internal/cadd"' true
+  check_stdenv 'fixtures.cgo-x86_64-darwin.bins.cgofix' true
+}
+
+# monorepo_with <function from the default arguments to the changes> <expression over app>
+# Evaluates the expression with app bound to the monorepo fixture built
+# with the changes.
+monorepo_with() {
+  nix eval --impure --raw "${exec_opt[@]}" --expr "
+    let
+      flake = builtins.getFlake \"$flake\";
+      app = flake.legacyPackages.\${builtins.currentSystem}.fixtures.monorepoWith ($1);
+    in $2"
+}
+
+# A directory replace must point inside src, and modRoot must hold go.mod;
+# the errors say what to change.
+check_monorepo_errors() {
+  local msg hint='a directory replace must point inside src; set src to a directory that holds both modules and modRoot to the one with go.mod'
+  if msg="$(monorepo_with "_: { src = $root/tests/fixtures/monorepo/app; modRoot = \".\"; }" 'app.drvPath' 2>&1)"; then
+    fail "monorepo: evaluated with the replaced module missing from src"
+  fi
+  case "$msg" in
+    *'replacement directory ../lib does not exist'*"$hint"*) ;;
+    *) fail "monorepo: unhelpful error for a replaced module missing from src: $msg" ;;
+  esac
+  if msg="$(monorepo_with "_: { src = \"\${$root/tests/fixtures/monorepo}/app\"; modRoot = \".\"; }" 'app.drvPath' 2>&1)"; then
+    fail "monorepo: evaluated with the replaced module outside src"
+  fi
+  case "$msg" in
+    *'replace example.com/monorepo/lib => ../lib: '*' is outside src '*"$hint"*) ;;
+    *) fail "monorepo: unhelpful error for a replaced module outside src: $msg" ;;
+  esac
+  if msg="$(monorepo_with '_: { modRoot = "nope"; }' 'app.drvPath' 2>&1)"; then
+    fail "monorepo: evaluated with a modRoot that holds no go.mod"
+  fi
+  case "$msg" in
+    *'modRoot "nope": no go.mod in '*) ;;
+    *) fail "monorepo: unhelpful error for a modRoot without go.mod: $msg" ;;
+  esac
+  echo "ok: monorepo: a replace outside src and a modRoot without go.mod are errors that say what to change"
+}
+
+# A monorepo: modRoot, a sibling module behind a directory replace, and a
+# dependency replaced by another version. The output is the source paths
+# the compiler recorded, as go build -trimpath records them, and [3 3 3]
+# from lib, which compiles with its own go 1.21.
+monorepo_checks() {
+  check_run monorepo app "example.com/monorepo/app/main.go example.com/monorepo/lib@v0.0.0-00010101000000-000000000000/lib.go github.com/google/go-cmp@v0.6.0/cmp/compare.go [3 3 3]"
+  check_modinfo_in monorepo monorepo/app app . -
+  check_tested_set monorepo "example.com/monorepo/app"
+  check_fetch_fallback monorepo "github.com/google/go-cmp@v0.7.0"
+  check_no_source_refs monorepo
+  check_monorepo_errors
+}
+
+# `tests/run.sh <check or section> [arguments]` runs that alone.
+if [ $# -gt 0 ]; then
+  "$@"
+  exit
+fi
+
 check_run hello-deps hello "hello, gonixgo"
 check_modinfo hello-deps hello .
 check_main_program hello-deps hello
@@ -486,6 +686,12 @@ check_incremental tests shared/fixture.txt "$p_test_nodes" "$tests_builder"
 check_incremental tests p/p.go \
   "example.com/tests/cmd/app example.com/tests/p example.com/tests/q bin:app testpkg:example.com/tests/cmd/app [example.com/tests/cmd/app.test] testpkg:example.com/tests/cmd/app.test testpkg:example.com/tests/p [example.com/tests/p.test] testpkg:example.com/tests/p.test testpkg:example.com/tests/p_test [example.com/tests/p.test] testpkg:example.com/tests/q [example.com/tests/p.test] testbin:example.com/tests/cmd/app testbin:example.com/tests/p test:example.com/tests/cmd/app test:example.com/tests/p" \
   "$tests_builder"
+
+cross_checks
+if [ "$(uname -s)-$(uname -m)" = Darwin-arm64 ]; then
+  x86_64_darwin_checks
+fi
+monorepo_checks
 
 check_exec_error
 check_go_override

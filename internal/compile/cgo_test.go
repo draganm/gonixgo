@@ -238,6 +238,9 @@ func TestTrimRoot(t *testing.T) {
 		{"/s/internal/cadd", "example.com/app/internal/cadd", "/s", "example.com/app"},
 		{"/s", "example.com/app", "/s", "example.com/app"},
 		{"/m/sub/pkg", "mod@v1.0.0/sub/pkg", "/m", "mod@v1.0.0"},
+		// A package of a module replaced by a directory: cmd/go maps the
+		// module's directory to its path and required version.
+		{"/s/lib/sub", "example.com/lib@v1.2.3/sub", "/s/lib", "example.com/lib@v1.2.3"},
 		// The module is in a subdirectory of the source whose name is not
 		// part of the module path.
 		{"/s/go/internal/x", "example.com/app/internal/x", "/s/go", "example.com/app"},

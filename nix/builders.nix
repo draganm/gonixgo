@@ -1,7 +1,7 @@
 # The builder functions the generated graph calls. Each defines how one
 # kind of node becomes a derivation. The wiring between nodes is in the
 # graph `gonixgo resolve` prints.
-{ lib, cacert, stdenv, go, tool, stdlib, system, goos, goarch }:
+{ lib, cacert, stdenv, go, tool, stdlib, system, goos, goarch, goarm }:
 
 # Per-application settings.
 { srcStr, cgoEnabled, ldflags, packageOverrides ? { }
@@ -11,6 +11,10 @@ let
   goBin = "${go}/bin/go";
   builder = "${tool}/bin/gonixgo";
   std = stdlib cgoEnabled;
+
+  # The target as the manifests carry it: GOARM only for 32-bit ARM, so
+  # the manifests for other targets stay as they were.
+  target = { inherit goos goarch; } // lib.optionalAttrs (goarm != "") { inherit goarm; };
 
   # What a package's cgo compile or its tests need beyond the platform:
   # the packageOverrides entry for its import path, else the one for its
@@ -75,9 +79,9 @@ in
     { name, importPath, module, src ? null, subdir ? "", trimTo, lang, isMain
     , goFiles ? [ ], sFiles ? [ ], embed ? { }, deps, cgo ? null, testMain ? null, ... }:
     let
-      manifest = {
+      manifest = target // {
         go = goBin;
-        inherit goos goarch importPath isMain lang goFiles sFiles embed;
+        inherit importPath isMain lang goFiles sFiles embed;
         # null: the package is under test and keeps its source paths.
         trimTo = if trimTo == null then "" else trimTo;
         # A test main has no source; its manifest carries it.
@@ -115,9 +119,9 @@ in
   # which needs the libraries of every such package.
   link = { name, binName, main, deps, modinfo, godebug, cgo ? false, cxx ? false, test ? false }:
     let
-      manifest = {
+      manifest = target // {
         go = goBin;
-        inherit goos goarch binName modinfo godebug ldflags;
+        inherit binName modinfo godebug ldflags;
         main = "${main}/pkg.a";
         importcfgs = [ "${std}/importcfg" "${main}/importcfg" ]
           ++ map (dep: "${dep}/importcfg") deps;

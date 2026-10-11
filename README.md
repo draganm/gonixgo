@@ -55,11 +55,13 @@ returns the same set as `mkGoEnv`.
 | Argument | Default | Meaning |
 |---|---|---|
 | `pkgs` | required | The nixpkgs that builds the tool, the standard library and the packages. |
-| `go` | `pkgs.buildPackages.go` | The Go that builds. |
-| `evalPkgs` | `null` | Package set for the evaluating machine, when it differs from the build platform; `null` means `pkgs.buildPackages`. |
+| `go` | `pkgs.pkgsBuildBuild.go` | The Go that builds. It runs on the build platform; the target comes from `pkgs`. |
+| `evalPkgs` | `null` | Package set for the evaluating machine, when it differs from the build platform; `null` means `pkgs.pkgsBuildBuild`. |
 | `evalGo` | `null` | The Go that resolves the graph during evaluation; `null` means `evalPkgs.go` when `evalPkgs` is given, otherwise `go`. It must be the same version as `go`. |
 
 To choose a Go version: `gonixgo.lib.mkGoEnv { inherit pkgs; go = pkgs.go_1_25; }`.
+In a cross build, take it from `pkgs.pkgsBuildBuild`, as in
+`go = pkgs.pkgsBuildBuild.go_1_25`.
 
 ### `buildGoApplication`
 
@@ -72,7 +74,7 @@ To choose a Go version: `gonixgo.lib.mkGoEnv { inherit pkgs; go = pkgs.go_1_25; 
 | `subPackages` | `[ "." ]` | Main packages to build, relative to `modRoot`. |
 | `tags` | `[ ]` | Build tags. |
 | `ldflags` | `[ ]` | Linker flags, split as `go build -ldflags` splits them. |
-| `CGO_ENABLED` | `null` | `null` uses Go's default for the target, which with nixpkgs' Go is on. |
+| `CGO_ENABLED` | `null` | `null` uses Go's default for the target, which with nixpkgs' Go is on, except in a cross build, where it is off; see [Cross-compilation](#cross-compilation). |
 | `doCheck` | `true` | Build and run the tests of the program's packages; see [Tests](#tests). |
 | `checkFlags` | `[ ]` | Flags for every test, spelt as for `go test`: `-run`, `-skip`, `-short`, `-v`, `-count`, `-timeout` and the other flags `go test` hands to the test binary. |
 | `nativeCheckInputs` | `[ ]` | Tools on every test's `PATH`. |
@@ -196,6 +198,92 @@ packages with only test files. Tests do not run when cross-compiling.
 ordinary tests) and `-json` output are not supported; a build flag in
 `checkFlags`, such as `-race`, is rejected by the test binary.
 
+### Cross-compilation
+
+The target is the platform of the `pkgs` you pass to `mkGoEnv`, so a
+`pkgsCross` set builds for its platform:
+
+```nix
+goEnv = gonixgo.lib.mkGoEnv { pkgs = pkgs.pkgsCross.aarch64-multiplatform; };
+```
+
+The Go that builds runs on your machine and is the one the binary cache
+holds. `GOOS`, `GOARCH` and, for 32-bit ARM, `GOARM` come from the target. A
+Go from the cross set itself, such as `pkgs.pkgsCross.aarch64-multiplatform.go_1_25`,
+runs on the target, and `mkGoEnv` refuses it.
+
+cgo is off in a cross build unless you set `CGO_ENABLED = 1`, so a pure-Go
+program needs no C toolchain for the target. With it, cgo packages compile
+with the cross C compiler, and `packageOverrides` entries take the target's
+libraries from the cross set:
+
+```nix
+let cross = pkgs.pkgsCross.aarch64-multiplatform; in
+(gonixgo.lib.mkGoEnv { pkgs = cross; }).buildGoApplication {
+  pname = "app";
+  src = ./.;
+  CGO_ENABLED = 1;
+  packageOverrides."example.com/app/internal/zstd" = {
+    buildInputs = [ cross.zstd ];
+    nativeBuildInputs = [ cross.pkg-config ];
+  };
+}
+```
+
+Nix builds the cross C toolchain when the binary cache lacks it, which it
+does for a Mac building for Linux. When cgo is off, a package that cannot
+load without it fails evaluation, and one that loads without its cgo files
+is named in a warning; both say to set `CGO_ENABLED = 1`. Heed the warning:
+such a package may not compile, and one with a pure-Go fallback for builds
+without cgo, such as `github.com/mattn/go-sqlite3`, builds but fails only
+when it runs.
+
+Tests run only when your machine can run the target's binaries.
+
+`evalPkgs` is for something else: building on another machine, such as a
+Linux remote builder from a Mac. There `pkgs` is the builder's nixpkgs and
+`evalPkgs` your machine's, whose tool and Go resolve the graph:
+
+```nix
+gonixgo.lib.mkGoEnv {
+  pkgs = nixpkgs.legacyPackages.x86_64-linux;
+  evalPkgs = nixpkgs.legacyPackages.aarch64-darwin;
+}
+```
+
+### Monorepos and `replace`
+
+`modRoot` names the directory of `go.mod` inside `src`, and `subPackages` are
+relative to it. A sibling module behind a directory `replace` must be inside
+`src`:
+
+```
+repo/
+  services/api/go.mod   replace example.com/repo/lib => ../../lib
+  lib/go.mod
+```
+
+```nix
+goEnv.buildGoApplication {
+  pname = "api";
+  src = ./.;              # repo/
+  modRoot = "services/api";
+}
+```
+
+The sibling module's packages build from `src` like the program's own, and
+compile with that module's `go` directive. Their tests do not run; only the
+main module's packages are tested. A `replace` with another version, or with
+a fork under another path, changes what is fetched. Either way the packages
+keep their import paths: a `packageOverrides` key is the import path or the
+module path the code imports, not the fork's. The binary's module info lists
+the replacements as `go build` does.
+
+`go.work` is ignored, so each module's `go.mod` needs its own `replace`
+lines. A directory `replace` that leaves `src` fails during evaluation: make
+`src` the directory that holds both modules, and `modRoot` the one with the
+program.
+
 ## What evaluation needs
 
 - `allow-unsafe-native-code-during-evaluation = true`, from `--option`,
@@ -218,9 +306,8 @@ environment of whatever builds it: the Nix daemon's, on multi-user installs.
 
 ## Not yet supported
 
-`replace` directives, cross-compilation, `go.work`, `vendor/` directories,
-and packages with SWIG, Fortran or `.syso` files; `.syso` support may come
-later. Such packages and `replace` directives are rejected during
+`go.work`, `vendor/` directories, and packages with SWIG, Fortran or `.syso`
+files; `.syso` support may come later. Such packages are rejected during
 evaluation with a message naming them.
 
 The integration tests have been run on aarch64-darwin only; Linux is
