@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"maps"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/draganm/gonixgo/internal/golist"
 	"github.com/draganm/gonixgo/internal/graph"
 	"github.com/draganm/gonixgo/internal/testutil"
 )
@@ -391,5 +396,212 @@ func TestRunCrossWarnsAboutLeftOutCgoFiles(t *testing.T) {
 	off := false
 	if stderr, err := resolve(&off); err != nil || strings.Contains(stderr, "cgo is off") {
 		t.Errorf("with CGO_ENABLED = 0 asked for: stderr = %q, err = %v; want no warning", stderr, err)
+	}
+}
+
+// goCmd runs the go command in dir, offline.
+func goCmd(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(testutil.Go(t), args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOFLAGS=", "GOPROXY=off", "GOTOOLCHAIN=local")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go %v: %v\n%s", args, err, out)
+	}
+}
+
+// workspaceFiles is a workspace of two modules: app's program imports lib.
+var workspaceFiles = map[string]string{
+	"go.work":     "go 1.22\n\nuse (\n\t./app\n\t./lib\n)\n",
+	"app/go.mod":  "module example.com/work/app\n\ngo 1.22\n",
+	"app/main.go": "package main\n\nimport (\n\t\"fmt\"\n\n\t\"example.com/work/lib\"\n)\n\nfunc main() { fmt.Println(lib.Name) }\n",
+	"lib/go.mod":  "module example.com/work/lib\n\ngo 1.21\n",
+	"lib/lib.go":  "package lib\n\nconst Name = \"lib\"\n",
+}
+
+// A go.work above modRoot inside src is used: lib builds from src, and
+// module info lists it as (devel).
+func TestRunWorkspace(t *testing.T) {
+	out, err := run(t, Args{Src: testutil.WriteTree(t, workspaceFiles), ModRoot: "app", SubPackages: []string{"."}, GoWork: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`src = b.localDir { name = "gosrc-example.com-work-lib"; files = [ "lib/lib.go" ]; };`,
+		`dep\texample.com/work/lib\t(devel)\t\n`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// The workspace root, which has no go.mod, can be modRoot.
+func TestRunWorkspaceRoot(t *testing.T) {
+	out, err := run(t, Args{Src: testutil.WriteTree(t, workspaceFiles), ModRoot: ".", SubPackages: []string{"app"}, GoWork: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"app" = b.link {`; !strings.Contains(out, want) {
+		t.Errorf("output lacks %q:\n%s", want, out)
+	}
+}
+
+// Without goWork, or with the go.work above src, the build is in module
+// mode, where nothing provides lib.
+func TestRunWorkspaceOff(t *testing.T) {
+	root := testutil.WriteTree(t, workspaceFiles)
+	for name, a := range map[string]Args{
+		"goWork off": {Src: root, ModRoot: "app"},
+		"above src":  {Src: filepath.Join(root, "app"), ModRoot: ".", GoWork: true},
+	} {
+		a.SubPackages = []string{"."}
+		_, err := run(t, a)
+		var loadErr *graph.LoadError
+		if !errors.As(err, &loadErr) || !strings.Contains(err.Error(), "example.com/work/lib") {
+			t.Errorf("%s: err = %v, want a load error about example.com/work/lib", name, err)
+		}
+	}
+}
+
+// With goWork, modRoot needs a go.mod or a go.work at or above it inside
+// src.
+func TestRunModRootWithoutGoModOrGoWork(t *testing.T) {
+	_, err := run(t, Args{Src: testutil.WriteTree(t, appFiles), ModRoot: "internal", SubPackages: []string{"."}, GoWork: true})
+	if err == nil || !strings.Contains(err.Error(), `modRoot "internal": no go.mod in `) ||
+		!strings.HasSuffix(err.Error(), ", and no go.work in it or above it inside src") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// In workspace mode the checksums come from go.work.sum and every used
+// module's go.sum; in module mode from modRoot's only.
+func TestReadSumsWorkspace(t *testing.T) {
+	files := maps.Clone(workspaceFiles)
+	files["go.work.sum"] = "example.com/x v1.0.0 h1:x\n"
+	files["lib/go.sum"] = "example.com/y v1.0.0 h1:y\n"
+	files["app/go.sum"] = "example.com/z v1.0.0 h1:z\n"
+	root := testutil.WriteTree(t, files)
+	o := golist.Options{Go: testutil.Go(t), Dir: filepath.Join(root, "app")}
+	got, err := readSums(o, filepath.Join(root, "go.work"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"example.com/x@v1.0.0": "h1:x", "example.com/y@v1.0.0": "h1:y", "example.com/z@v1.0.0": "h1:z"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("workspace sums = %v, want %v", got, want)
+	}
+	if got, err = readSums(o, ""); err != nil || !reflect.DeepEqual(got, map[string]string{"example.com/z@v1.0.0": "h1:z"}) {
+		t.Errorf("module sums = %v, %v; want app's only", got, err)
+	}
+}
+
+// vendoredFiles is a module whose dependencies go.mod replaces by
+// directories, which go mod vendor copies into vendor/. Only the main
+// package's test imports testdep.
+var vendoredFiles = map[string]string{
+	"go.mod": "module example.com/vendored\n\ngo 1.22\n\nrequire (\n" +
+		"\texample.com/dep v0.0.0-00010101000000-000000000000\n" +
+		"\texample.com/testdep v0.0.0-00010101000000-000000000000\n)\n\n" +
+		"replace example.com/dep => ./dep\n\nreplace example.com/testdep => ./testdep\n",
+	"main.go":            "package main\n\nimport (\n\t\"fmt\"\n\n\t\"example.com/dep\"\n)\n\nfunc main() { fmt.Println(dep.Name) }\n",
+	"main_test.go":       "package main\n\nimport (\n\t\"testing\"\n\n\t\"example.com/testdep\"\n)\n\nfunc TestName(t *testing.T) { _ = testdep.Name }\n",
+	"dep/go.mod":         "module example.com/dep\n\ngo 1.21\n",
+	"dep/dep.go":         "package dep\n\nconst Name = \"dep\"\n",
+	"testdep/go.mod":     "module example.com/testdep\n\ngo 1.21\n",
+	"testdep/testdep.go": "package testdep\n\nconst Name = \"testdep\"\n",
+}
+
+func vendoredTree(t *testing.T) string {
+	t.Helper()
+	src := testutil.WriteTree(t, vendoredFiles)
+	goCmd(t, src, "mod", "vendor")
+	return src
+}
+
+// With vendor/ the dependencies, a test-only one included, build from it,
+// and nothing is fetched.
+func TestRunVendored(t *testing.T) {
+	out, err := run(t, Args{Src: vendoredTree(t), ModRoot: ".", SubPackages: []string{"."}, Vendor: true, DoCheck: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"  modules = {\n  };\n",
+		`name = "gopkg-example.com-dep-v0.0.0-00010101000000-000000000000";`,
+		`src = b.localDir { name = "gosrc-example.com-dep"; files = [ "vendor/example.com/dep/dep.go" ]; };`,
+		`src = b.localDir { name = "gosrc-example.com-testdep"; files = [ "vendor/example.com/testdep/testdep.go" ]; };`,
+		`dep\texample.com/dep\tv0.0.0-00010101000000-000000000000\n=>\t./dep\t(devel)\t\n\n`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// Without vendor, vendor/ is ignored: the replacements build from their
+// own directories.
+func TestRunVendorOff(t *testing.T) {
+	out, err := run(t, Args{Src: vendoredTree(t), ModRoot: ".", SubPackages: []string{"."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `src = b.localDir { name = "gosrc-example.com-dep"; files = [ "dep/dep.go" ]; };`; !strings.Contains(out, want) {
+		t.Errorf("output lacks %q:\n%s", want, out)
+	}
+}
+
+// go work vendor puts vendor/ next to go.work, and the workspace builds
+// from it.
+func TestRunWorkspaceVendored(t *testing.T) {
+	files := maps.Clone(workspaceFiles)
+	files["go.work"] = "go 1.22\n\nuse (\n\t./app\n\t./lib\n)\n\nreplace example.com/dep => ./dep\n"
+	files["lib/go.mod"] = "module example.com/work/lib\n\ngo 1.21\n\nrequire example.com/dep v0.0.0-00010101000000-000000000000\n"
+	files["lib/lib.go"] = "package lib\n\nimport \"example.com/dep\"\n\nconst Name = dep.Name\n"
+	files["dep/go.mod"] = "module example.com/dep\n\ngo 1.21\n"
+	files["dep/dep.go"] = "package dep\n\nconst Name = \"dep\"\n"
+	root := testutil.WriteTree(t, files)
+	goCmd(t, root, "work", "vendor")
+	out, err := run(t, Args{Src: root, ModRoot: "app", SubPackages: []string{"."}, GoWork: true, Vendor: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`files = [ "vendor/example.com/dep/dep.go" ]`, `files = [ "lib/lib.go" ]`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// When go list fails as a whole, the error names the go.work and vendor/
+// that gonixgo let go use, and how to turn each off.
+func TestRunListFailureLines(t *testing.T) {
+	files := maps.Clone(workspaceFiles)
+	files["go.work"] = "go 1.22\n\nuse (\n\t./app\n\t./lib\n\t../outside\n)\n"
+	root := testutil.WriteTree(t, files)
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = run(t, Args{Src: root, ModRoot: "app", SubPackages: []string{"."}, GoWork: true, Vendor: true})
+	want := "\ngonixgo used the workspace " + filepath.Join(real, "go.work") + "; set useGoWork = false to build without it"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want it to contain %q", err, want)
+	}
+
+	// A requirement that vendor/modules.txt does not know makes vendor/
+	// out of date.
+	src := vendoredTree(t)
+	goMod := filepath.Join(src, "go.mod")
+	data, err := os.ReadFile(goMod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(goMod, append(data, "\nrequire example.com/extra v1.0.0\n"...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = run(t, Args{Src: src, ModRoot: ".", SubPackages: []string{"."}, Vendor: true})
+	if want := "\ngonixgo let go use vendor/; set useVendor = false to fetch modules instead"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want it to contain %q", err, want)
 	}
 }
