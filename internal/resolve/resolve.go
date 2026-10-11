@@ -126,8 +126,9 @@ func Run(a Args, opts Options, stdout io.Writer) error {
 	g, err := graph.Build(graph.Input{Packages: pkgs, Src: src, Env: env, Tags: a.Tags, Sums: sums})
 	if err != nil {
 		var loadErr *graph.LoadError
-		if crossCgoOff && errors.As(err, &loadErr) {
-			loadErr.CrossCgoOff = true
+		if errors.As(err, &loadErr) {
+			loadErr.CrossCgoOff = crossCgoOff
+			loadErr.Hints = modeLines(dir, workFile, a.Vendor)
 		}
 		return err
 	}
@@ -137,7 +138,9 @@ func Run(a Args, opts Options, stdout io.Writer) error {
 	if a.DoCheck && len(g.Tested) > 0 {
 		if err := addTests(g, o, graph.Input{Src: src, Env: env, Tags: a.Tags, Sums: sums}); err != nil {
 			var loadErr *graph.LoadError
-			if !errors.As(err, &loadErr) {
+			if errors.As(err, &loadErr) {
+				loadErr.Hints = modeLines(dir, workFile, a.Vendor)
+			} else {
 				err = failed(err)
 			}
 			return err
@@ -248,35 +251,38 @@ func readSums(o golist.Options, workFile string) (map[string]string, error) {
 	return sums, nil
 }
 
-// listFailed adds to err, from a go command that failed as a whole, the
-// go.work and vendor/ gonixgo let go use, and how to turn each off.
-func listFailed(err error, dir, workFile string, vendor bool) error {
-	var extra string
+// modeLines name the go.work and the vendor/ gonixgo let go use, and how
+// to turn each off. Errors may come from either.
+func modeLines(dir, workFile string, vendor bool) []string {
+	var lines []string
 	if workFile != "" {
-		extra += "\ngonixgo used the workspace " + workFile + "; set useGoWork = false to build without it"
+		lines = append(lines, "gonixgo used the workspace "+workFile+"; set useGoWork = false to build without it")
 	}
 	if vendor && hasVendor(dir, workFile) {
-		extra += "\ngonixgo let go use vendor/; set useVendor = false to fetch modules instead"
+		lines = append(lines, "gonixgo let go use vendor/; set useVendor = false to fetch modules instead")
 	}
-	if extra == "" {
-		return err
-	}
-	return fmt.Errorf("%w%s", err, extra)
+	return lines
 }
 
-// hasVendor reports whether vendor/modules.txt is in dir or next to the
-// go.work.
+// listFailed adds the mode lines to err, from a go command that failed as
+// a whole.
+func listFailed(err error, dir, workFile string, vendor bool) error {
+	lines := modeLines(dir, workFile, vendor)
+	if len(lines) == 0 {
+		return err
+	}
+	return fmt.Errorf("%w\n%s", err, strings.Join(lines, "\n"))
+}
+
+// hasVendor reports whether there is a vendor directory where go looks for
+// one: next to the go.work in workspace mode, next to go.mod otherwise.
+// Its contents do not matter; go decides on the directory alone.
 func hasVendor(dir, workFile string) bool {
-	paths := []string{filepath.Join(dir, "vendor", "modules.txt")}
 	if workFile != "" {
-		paths = append(paths, filepath.Join(filepath.Dir(workFile), "vendor", "modules.txt"))
+		dir = filepath.Dir(workFile)
 	}
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return true
-		}
-	}
-	return false
+	info, err := os.Stat(filepath.Join(dir, "vendor"))
+	return err == nil && info.IsDir()
 }
 
 // addTests runs the -test pass over the tested packages of g and adds

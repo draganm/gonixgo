@@ -58,8 +58,10 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 	switch {
 	case !m.Main && m.Dir == "":
 		// Vendored: go list reports no directory for the module, whose
-		// packages are under vendor/. They build from src.
-		vendor := strings.TrimSuffix(p.Dir, string(filepath.Separator)+filepath.FromSlash(p.ImportPath))
+		// packages are under vendor/. They build from src. A test copy's
+		// import path ends in " [P.test]".
+		base, _, _ := strings.Cut(p.ImportPath, " ")
+		vendor := strings.TrimSuffix(p.Dir, string(filepath.Separator)+filepath.FromSlash(base))
 		rel, err := filepath.Rel(src, vendor)
 		if vendor == p.Dir || filepath.Base(vendor) != "vendor" || err != nil || outside(rel) {
 			return nil, nil, fmt.Errorf("%s: vendored, but its directory %s is not under a vendor directory inside src %s", p.ImportPath, p.Dir, src)

@@ -605,3 +605,57 @@ func TestRunListFailureLines(t *testing.T) {
 		t.Errorf("err = %v, want it to contain %q", err, want)
 	}
 }
+
+// Errors that go list reports per package also name the go.work and the
+// vendor/ that gonixgo let go use: a go.work that does not use modRoot's
+// module, and an import that vendor/ lacks.
+func TestRunLoadErrorModeLines(t *testing.T) {
+	files := maps.Clone(workspaceFiles)
+	files["go.work"] = "go 1.22\n\nuse ./lib\n"
+	root := testutil.WriteTree(t, files)
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = run(t, Args{Src: root, ModRoot: "app", SubPackages: []string{"."}, GoWork: true, Vendor: true})
+	var loadErr *graph.LoadError
+	want := "\ngonixgo used the workspace " + filepath.Join(real, "go.work") + "; set useGoWork = false to build without it"
+	if !errors.As(err, &loadErr) || !strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want a load error with %q", err, want)
+	}
+
+	src := vendoredTree(t)
+	if err := os.WriteFile(filepath.Join(src, "main.go"), []byte("package main\n\nimport _ \"example.com/missing\"\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = run(t, Args{Src: src, ModRoot: ".", SubPackages: []string{"."}, Vendor: true})
+	want = "\ngonixgo let go use vendor/; set useVendor = false to fetch modules instead"
+	if !errors.As(err, &loadErr) || !strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want a load error with %q", err, want)
+	}
+}
+
+// The vendor line follows Go's own rule: a vendor/ directory next to
+// go.mod, whatever it holds, and in a workspace only the one next to
+// go.work.
+func TestRunVendorLineFollowsGo(t *testing.T) {
+	// A vendor/ that is not Go's, next to a go.mod with requirements:
+	// go list fails, and the line says how to ignore it.
+	files := maps.Clone(vendoredFiles)
+	files["vendor/autoload.php"] = "<?php\n"
+	_, err := run(t, Args{Src: testutil.WriteTree(t, files), ModRoot: ".", SubPackages: []string{"."}, Vendor: true})
+	want := "\ngonixgo let go use vendor/; set useVendor = false to fetch modules instead"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want it to contain %q", err, want)
+	}
+
+	// In a workspace a module's own vendor/ is not used, so it gets no
+	// line.
+	ws := maps.Clone(workspaceFiles)
+	ws["go.work"] = "go 1.22\n\nuse (\n\t./app\n\t./lib\n\t../outside\n)\n"
+	ws["app/vendor/modules.txt"] = "# stale\n"
+	_, err = run(t, Args{Src: testutil.WriteTree(t, ws), ModRoot: "app", SubPackages: []string{"."}, GoWork: true, Vendor: true})
+	if err == nil || strings.Contains(err.Error(), "useVendor") {
+		t.Errorf("err = %v, want an error without the vendor line", err)
+	}
+}

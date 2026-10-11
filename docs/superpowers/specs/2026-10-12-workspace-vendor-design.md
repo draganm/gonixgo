@@ -179,9 +179,9 @@ before.
 
 | Situation | Behaviour |
 |---|---|
-| `go list` fails as a whole | Go's message, then one line per mode in use: `gonixgo used the workspace <go.work path>; set useGoWork = false to build without it` when a `go.work` is in use, and `gonixgo let go use vendor/; set useVendor = false to fetch modules instead` when `useVendor` is on and `vendor/modules.txt` is at `modRoot` or next to the `go.work`. |
+| `go list` fails as a whole, or reports packages it could not load | Go's message, then one line per mode in use: `gonixgo used the workspace <go.work path>; set useGoWork = false to build without it` when a `go.work` is in use, and `gonixgo let go use vendor/; set useVendor = false to fetch modules instead` when `useVendor` is on and there is a `vendor` directory where Go looks for one: next to the `go.work` in workspace mode, next to `go.mod` otherwise. Go decides on the directory alone, so a `vendor/` that is not Go's gets the line too. |
 | A `go.work` uses a directory outside `src` | Go's "cannot load module … listed in go.work file", then the workspace line. |
-| An out-of-date `vendor/` | Go's "inconsistent vendoring" message, then the vendor line. |
+| An out-of-date `vendor/` | Go's "inconsistent vendoring" message, or "import lookup disabled by -mod=vendor" for an import it lacks, then the vendor line. |
 | `modRoot` has no `go.mod` and no `go.work` is in use | `modRoot "x": no go.mod in <dir>, and no go.work in it or above it inside src`. |
 | A vendored package outside a `vendor` directory, or outside `src` | Error naming the package and its directory. |
 

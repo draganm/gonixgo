@@ -298,13 +298,16 @@ program.
 
 With a `vendor/` directory, from `go mod vendor` or, in a workspace,
 `go work vendor`, the dependencies build from it whenever `go build` would:
-when `vendor/modules.txt` is there and the `go` directive is 1.14 or later.
+when there is a `vendor/` directory next to `go.mod` and the `go` directive is
+1.14 or later, or, in a workspace, next to `go.work` with `go` 1.22 or later.
 Nothing is fetched, so evaluation needs no network and no module cache, and
 module info records no checksums, as under `go build`.
 
 An out-of-date `vendor/` fails evaluation with Go's "inconsistent vendoring"
-message: run `go mod vendor`, or set `useVendor = false` to fetch the modules
-instead.
+message, and an import it lacks with "import lookup disabled by
+-mod=vendor": run `go mod vendor`, or set `useVendor = false` to fetch the
+modules instead. A `vendor/` directory that is not Go's, such as PHP's next to
+`go.mod`, needs `useVendor = false` too.
 
 ## What evaluation needs
 

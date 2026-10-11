@@ -168,3 +168,20 @@ func TestBuildWorkspaceModuleInfo(t *testing.T) {
 		}
 	}
 }
+
+// A vendored package that go list -test recompiles against the package
+// under test builds from vendor/ like the package itself.
+func TestTestCopyOfVendoredPackage(t *testing.T) {
+	p := golist.Package{ImportPath: "github.com/google/go-cmp/cmp [example.com/vendored/p.test]", Name: "cmp",
+		Dir: "/src/vendor/github.com/google/go-cmp/cmp", Module: cmpVendored, ForTest: "example.com/vendored/p",
+		DepOnly: true, GoFiles: []string{"compare.go"}}
+	pkg, _, err := newTestPackage(&p, "/src", nil, osStat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.ImportPath != "github.com/google/go-cmp/cmp" || !pkg.Local || pkg.VendorDir != "vendor" ||
+		pkg.Subdir != "vendor/github.com/google/go-cmp/cmp" || pkg.TrimTo != "github.com/google/go-cmp@v0.6.0/cmp" ||
+		pkg.SrcName != "gosrc-github.com-google-go-cmp-cmp" {
+		t.Errorf("test copy = %+v", pkg)
+	}
+}

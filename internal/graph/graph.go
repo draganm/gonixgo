@@ -142,6 +142,9 @@ type LoadError struct {
 	// CrossCgoOff says cgo is off only because the build is cross, which
 	// may be why packages did not load.
 	CrossCgoOff bool
+	// Hints are lines for the end of the message, such as the go.work and
+	// the vendor/ the build used and how to turn each off.
+	Hints []string
 }
 
 // crossCgoHint follows load problems in a cross build that left cgo off.
@@ -184,6 +187,9 @@ func (e *LoadError) Error() string {
 	}
 	if e.CrossCgoOff {
 		b.WriteString("\n" + crossCgoHint)
+	}
+	for _, h := range e.Hints {
+		b.WriteString("\n" + h)
 	}
 	if e.Tests {
 		b.WriteString("\nset doCheck = false to build without tests")
