@@ -283,7 +283,9 @@ and builders cannot drift and carries no version number.
 
 ### Environment for `go list`
 
-Set by the tool: `GOENV=off`, `GOFLAGS=-mod=readonly`, `GOWORK=off`,
+Set by the tool: `GOENV=off`; `GOFLAGS`, empty or `-mod=readonly` with
+`useVendor = false`; `GOWORK`, the `go.work` inside `src` or `off` (see the
+[workspace and vendoring design](2026-10-12-workspace-vendor-design.md));
 `GOTOOLCHAIN=local`, `GOOS`, `GOARCH`, `CGO_ENABLED`, and the build tags. The
 caller's build configuration (`GOOS`, `GOARCH`, `CGO_ENABLED`, the
 architecture level keys, `GOEXPERIMENT`, `GOFIPS140`, `GO111MODULE`, `GOROOT`)
@@ -537,11 +539,10 @@ non-zero. Nix then reports that the program failed.
 
 ## Not in this version
 
-`go.work` (forced off), `vendor/` directories (ignored; modules come from the
-module cache), PGO, `gcflags`, the race detector, coverage, vet and fuzzing in
-tests, `test2json` output, content-addressed derivations,
-`GOEXPERIMENT`/`GOFIPS140` configuration, and SWIG, Fortran and `.syso`
-files. `.syso` support may be added later.
+PGO, `gcflags`, the race detector, coverage, vet and fuzzing in tests,
+`test2json` output, content-addressed derivations, `GOEXPERIMENT`/`GOFIPS140`
+configuration, and SWIG, Fortran and `.syso` files. `.syso` support may be
+added later.
 
 ## Testing gonixgo
 
