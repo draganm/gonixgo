@@ -77,7 +77,7 @@ in
   # stdenv sets them up; the tool is then the whole build.
   compile =
     { name, importPath, module, src ? null, subdir ? "", trimTo, lang, isMain
-    , goFiles ? [ ], sFiles ? [ ], embed ? { }, deps, cgo ? null, testMain ? null, ... }:
+    , goFiles ? [ ], sFiles ? [ ], embed ? { }, deps, cgo ? null, testMain ? null, vendorDir ? null, ... }:
     let
       manifest = target // {
         go = goBin;
@@ -87,7 +87,8 @@ in
         # A test main has no source; its manifest carries it.
         srcDir = if src == null then "" else if subdir == "" then "${src}" else "${src}/${subdir}";
         importcfgs = [ "${std}/importcfg" ] ++ map (dep: "${dep}/importcfg") deps;
-      } // lib.optionalAttrs (testMain != null) { inherit testMain; };
+      } // lib.optionalAttrs (testMain != null) { inherit testMain; }
+        // lib.optionalAttrs (vendorDir != null) { vendorDir = "${src}/${vendorDir}"; };
       override = overrideFor importPath module;
     in
     if cgo == null then
