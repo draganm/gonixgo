@@ -654,6 +654,53 @@ workspace_checks() {
   check_workspace_off
 }
 
+# vendored_with <function from the default arguments to the changes> <expression over app>
+# Evaluates the expression with app bound to the vendored fixture built
+# with the changes.
+vendored_with() {
+  nix eval --impure --raw "${exec_opt[@]}" --expr "
+    let
+      flake = builtins.getFlake \"$flake\";
+      app = flake.legacyPackages.\${builtins.currentSystem}.fixtures.vendoredWith ($1);
+    in $2"
+}
+
+# check_vendored_modules <changes> <module keys, space separated>
+# What the vendored fixture fetches.
+check_vendored_modules() {
+  local got
+  got="$(vendored_with "$1" 'builtins.concatStringsSep " " (builtins.attrNames app.modules)')" ||
+    fail "vendored: does not evaluate with $1"
+  [ "$got" = "$2" ] || fail "vendored: with $1 the modules are [$got], want [$2]"
+  echo "ok: vendored: with $1 the modules are [$2]"
+}
+
+# A vendored build fetches nothing, so it evaluates without network or
+# module cache.
+check_vendored_offline() {
+  local cache
+  cache="$(mktemp -d)"
+  if ! GOPROXY=off GOMODCACHE="$cache" nix eval "${exec_opt[@]}" --raw "$flake#fixtures.vendored.drvPath" >/dev/null; then
+    rm -rf "$cache"
+    fail "vendored: does not evaluate with GOPROXY=off and an empty module cache"
+  fi
+  rm -rf "$cache"
+  echo "ok: vendored: evaluates with GOPROXY=off and an empty module cache"
+}
+
+# A vendored module: go-cmp, and cdep, a cgo package behind a directory
+# replace, build from vendor/. The output is the source paths go build
+# -trimpath records, cdep's C file under /_/vendor as cmd/go maps it.
+vendored_checks() {
+  check_run vendored vendored "github.com/google/go-cmp@v0.6.0/cmp/compare.go /_/vendor/example.com/cdep/cdep.go"
+  check_modinfo_in vendored vendored vendored . cgoShell GOFLAGS=
+  check_vendored_modules '_: { }' ""
+  check_vendored_modules '_: { useVendor = false; }' "github.com/google/go-cmp@v0.6.0"
+  check_vendored_offline
+  check_stdenv 'fixtures.vendored.packages."example.com/cdep"' true
+  check_no_source_refs vendored
+}
+
 # `tests/run.sh <check or section> [arguments]` runs that alone.
 if [ $# -gt 0 ]; then
   "$@"
@@ -742,6 +789,7 @@ if [ "$(uname -s)-$(uname -m)" = Darwin-arm64 ]; then
 fi
 monorepo_checks
 workspace_checks
+vendored_checks
 
 check_exec_error
 check_go_override

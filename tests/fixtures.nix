@@ -36,6 +36,13 @@ let
     modRoot = "app";
   };
 
+  # The vendored fixture's arguments, which run.sh varies through
+  # vendoredWith.
+  vendoredArgs = {
+    pname = "vendored";
+    src = ./fixtures/vendored;
+  };
+
   # The monorepo fixture's arguments, which run.sh varies through
   # monorepoWith.
   monorepoArgs = {
@@ -91,6 +98,10 @@ in
   # The workspace fixture with the attributes f returns, given the default
   # arguments, laid over them.
   workspaceWith = f: goEnv.buildGoApplication (workspaceArgs // f workspaceArgs);
+  vendored = goEnv.buildGoApplication vendoredArgs;
+  # The vendored fixture with the attributes f returns, given the default
+  # arguments, laid over them.
+  vendoredWith = f: goEnv.buildGoApplication (vendoredArgs // f vendoredArgs);
 
   # Linux builds made here with the native Go. They cannot run here.
   hello-deps-aarch64-linux = arm64Env.buildGoApplication helloArgs;
