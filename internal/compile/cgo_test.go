@@ -292,3 +292,29 @@ func TestRunCgoUntrimmed(t *testing.T) {
 		t.Error("pkg.a has a rewritten source path or names the scratch directory")
 	}
 }
+
+// A vendored cgo package's C files are recorded under /_/vendor, as cmd/go
+// records them: it maps the vendor directory, not the module's.
+func TestRunCgoVendored(t *testing.T) {
+	goBin := testutil.Go(t)
+	std := testutil.CgoStdImportcfg(t, goBin)
+	files := map[string]string{}
+	for name, content := range cgoFiles {
+		files["vendor/example.com/app/"+name] = content
+	}
+	src := testutil.WriteTree(t, files)
+	m := cgoManifest(goBin, filepath.Join(src, "vendor", "example.com", "app"), std)
+	m.TrimTo = "example.com/app@v1.0.0/cadd"
+	m.VendorDir = filepath.Join(src, "vendor")
+	out := t.TempDir()
+	if err := Run(m, out, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	archive := readArchive(t, out)
+	if !bytes.Contains(archive, []byte("/_/vendor/example.com/app/cadd")) {
+		t.Error("pkg.a does not name the vendored source directory /_/vendor/example.com/app/cadd")
+	}
+	if bytes.Contains(archive, []byte(src)) {
+		t.Errorf("pkg.a names the source directory %s", src)
+	}
+}

@@ -147,7 +147,12 @@ func runCgo(tc *gotool.Toolchain, m Manifest, workDir string) (goFiles, members 
 	// The compiler must not record where the source is in the store,
 	// unless the package is under test and keeps its paths.
 	var srcMap cc.PathMap
-	if m.TrimTo != "" {
+	switch {
+	case m.TrimTo == "":
+	case m.VendorDir != "":
+		// cmd/go maps the vendor directory itself for vendored packages.
+		srcMap = cc.PathMap{From: m.VendorDir, To: "/_/vendor"}
+	default:
 		rootDir, rootName := trimRoot(m.SrcDir, m.TrimTo)
 		srcMap = cc.PathMap{From: rootDir, To: "/_/" + rootName}
 	}

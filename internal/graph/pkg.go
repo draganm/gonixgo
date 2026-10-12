@@ -55,25 +55,35 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 		}
 	}
 
-	// The main module, and a module replaced by a directory, build from
-	// src.
-	if m.Main || m.Replace != nil && m.Replace.Version == "" {
-		rel, err := filepath.Rel(src, p.Dir)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	switch {
+	case !m.Main && m.Dir == "":
+		// Vendored: go list reports no directory for the module, whose
+		// packages are under vendor/. They build from src. A test copy's
+		// import path ends in " [P.test]".
+		base, _, _ := strings.Cut(p.ImportPath, " ")
+		vendor := strings.TrimSuffix(p.Dir, string(filepath.Separator)+filepath.FromSlash(base))
+		rel, err := filepath.Rel(src, vendor)
+		if vendor == p.Dir || filepath.Base(vendor) != "vendor" || err != nil || outside(rel) {
+			return nil, nil, fmt.Errorf("%s: vendored, but its directory %s is not under a vendor directory inside src %s", p.ImportPath, p.Dir, src)
+		}
+		pkg.Name = storepath.SanitizeName("gopkg-" + p.ImportPath + "-" + builtVersion(m))
+		pkg.VendorDir = slashDir(rel)
+		if err := fromSrc(pkg, p, src, stat); err != nil {
+			return nil, nil, err
+		}
+		return pkg, nil, nil
+	case m.Main || m.Replace != nil && m.Replace.Version == "":
+		// The main modules, and a module replaced by a directory, build
+		// from src.
+		if rel, err := filepath.Rel(src, p.Dir); err != nil || outside(rel) {
 			if !m.Main {
 				return nil, nil, fmt.Errorf("replace %s => %s: %s is outside src %s", m.Path, m.Replace.Path, m.Replace.Dir, src)
 			}
 			return nil, nil, fmt.Errorf("%s: directory %s is outside src %s", p.ImportPath, p.Dir, src)
 		}
-		pkg.Local = true
 		pkg.Name = storepath.SanitizeName("golocal-" + p.ImportPath)
-		pkg.SrcName = storepath.SanitizeName("gosrc-" + p.ImportPath)
-		pkg.Subdir = slashDir(rel)
-		pkg.SrcFiles = srcFiles(pkg.Subdir, p)
-		if pkg.Cgo != nil {
-			if err := addNamedPaths(pkg, p, src, stat); err != nil {
-				return nil, nil, err
-			}
+		if err := fromSrc(pkg, p, src, stat); err != nil {
+			return nil, nil, err
 		}
 		return pkg, nil, nil
 	}
@@ -88,7 +98,7 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 		return nil, nil, fmt.Errorf("%s: module %s has no version or is not in the module cache", p.ImportPath, fetched.Path)
 	}
 	rel, err := filepath.Rel(m.Dir, p.Dir)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if err != nil || outside(rel) {
 		return nil, nil, fmt.Errorf("%s: directory %s is outside module directory %s", p.ImportPath, p.Dir, m.Dir)
 	}
 	key := fetched.Path + "@" + fetched.Version
@@ -105,6 +115,38 @@ func newPackage(p *golist.Package, src string, byPath map[string]*golist.Package
 		Name: storepath.SanitizeName("gomod-" + fetched.Path + "-" + fetched.Version),
 	}
 	return pkg, mod, nil
+}
+
+// fromSrc sets up pkg, the node of p, to build from a filtered copy of src.
+func fromSrc(pkg *Package, p *golist.Package, src string, stat func(string) (isDir, exists bool)) error {
+	rel, err := filepath.Rel(src, p.Dir)
+	if err != nil || outside(rel) {
+		return fmt.Errorf("%s: directory %s is outside src %s", p.ImportPath, p.Dir, src)
+	}
+	pkg.Local = true
+	pkg.SrcName = storepath.SanitizeName("gosrc-" + p.ImportPath)
+	pkg.Subdir = slashDir(rel)
+	pkg.SrcFiles = srcFiles(pkg.Subdir, p)
+	if pkg.Cgo != nil {
+		return addNamedPaths(pkg, p, src, stat)
+	}
+	return nil
+}
+
+// outside reports whether rel, a path relative to some directory, leaves
+// that directory.
+func outside(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// builtVersion is the version of module m whose files are built: the
+// replacement's for a module replaced by another version, the required
+// one otherwise.
+func builtVersion(m *golist.Module) string {
+	if m.Replace != nil && m.Replace.Version != "" {
+		return m.Replace.Version
+	}
+	return m.Version
 }
 
 // trimTo is what -trimpath rewrites the directory of package importPath,

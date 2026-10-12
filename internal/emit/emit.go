@@ -127,6 +127,10 @@ func compileNode(b *strings.Builder, g *graph.Graph, key string, p *graph.Packag
 		attr(b, 3, "embed", embed(p.Embed))
 	}
 	attr(b, 3, "deps", refs(g, p.Deps))
+	if p.VendorDir != "" && p.Cgo != nil {
+		// The C compiler maps a vendored package's vendor directory.
+		attr(b, 3, "vendorDir", quote(p.VendorDir))
+	}
 	if c := p.Cgo; c != nil {
 		// Its presence makes the compile builder use the C toolchain.
 		b.WriteString("      cgo = {\n")

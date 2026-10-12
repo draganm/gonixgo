@@ -15,6 +15,8 @@
 , nativeCheckInputs ? [ ]
 , checkEnv ? { }
 , packageOverrides ? { }
+, useGoWork ? true
+, useVendor ? true
 , meta ? { }
 }:
 let
@@ -44,6 +46,9 @@ let
       doCheck = runTests;
       # A build for another platform: cgo is off there unless asked for.
       cross = stdenv.buildPlatform != stdenv.hostPlatform;
+      # Workspace and vendor mode as go build chooses them, unless turned off.
+      goWork = useGoWork;
+      vendor = useVendor;
       cgoEnabled =
         if CGO_ENABLED == null then null
         else builtins.elem CGO_ENABLED [ 1 "1" true ];

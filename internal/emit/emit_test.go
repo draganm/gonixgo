@@ -501,3 +501,20 @@ func TestNixTestsEvaluate(t *testing.T) {
 		t.Fatalf("evaluated to %+v", got)
 	}
 }
+
+// A vendored cgo package's compile is told where its vendor directory is.
+func TestNixVendoredCgo(t *testing.T) {
+	g := cgoGraph()
+	cadd := g.Packages["example.com/app/internal/cadd"]
+	cadd.Subdir, cadd.VendorDir = "vendor/example.com/app/internal/cadd", "vendor"
+	var buf bytes.Buffer
+	if err := Nix(&buf, g); err != nil {
+		t.Fatal(err)
+	}
+	if want := "      vendorDir = \"vendor\";\n"; !strings.Contains(buf.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, buf.String())
+	}
+	if n := strings.Count(buf.String(), "vendorDir"); n != 1 {
+		t.Errorf("vendorDir appears %d times, want once:\n%s", n, buf.String())
+	}
+}

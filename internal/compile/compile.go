@@ -27,6 +27,7 @@ type Manifest struct {
 	IsMain     bool                `json:"isMain"`     //
 	SrcDir     string              `json:"srcDir"`     // directory holding the package's files
 	TrimTo     string              `json:"trimTo"`     // what -trimpath rewrites SrcDir to, "" to keep it
+	VendorDir  string              `json:"vendorDir"`  // a vendored package's vendor directory, "" otherwise
 	Lang       string              `json:"lang"`       // e.g. go1.24
 	GoFiles    []string            `json:"goFiles"`    //
 	SFiles     []string            `json:"sFiles"`     //

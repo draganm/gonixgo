@@ -154,7 +154,7 @@ func TestEnvIgnoresCallerBuildConfiguration(t *testing.T) {
 			t.Errorf("%s = %q in a hostile environment, %q in a clean one", k, hostile[k], clean[k])
 		}
 	}
-	for k, want := range map[string]string{"GOFLAGS": "-mod=readonly", "GOWORK": "off", "GOTOOLCHAIN": "local"} {
+	for k, want := range map[string]string{"GOFLAGS": "", "GOWORK": "off", "GOTOOLCHAIN": "local"} {
 		if hostile[k] != want {
 			t.Errorf("%s = %q, want %q", k, hostile[k], want)
 		}
@@ -286,5 +286,46 @@ func TestListTestsWithPrivateCache(t *testing.T) {
 	main := index(pkgs)["example.com/m/p.test"]
 	if len(main.GoFiles) != 1 || !strings.HasPrefix(main.GoFiles[0], cache) {
 		t.Fatalf("test main files = %v, want one under %s", main.GoFiles, cache)
+	}
+}
+
+// The go.work to use and whether to ignore vendor/ reach every go command.
+func TestOptionsWorkspaceAndVendor(t *testing.T) {
+	dir := testutil.WriteTree(t, appFiles)
+	work := filepath.Join(dir, "go.work")
+	if err := os.WriteFile(work, []byte("go 1.22\n\nuse .\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o := Options{Go: testutil.Go(t), Dir: dir}
+	env, err := Env(o, "GOWORK", "GOFLAGS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["GOWORK"] != "off" || env["GOFLAGS"] != "" {
+		t.Errorf("by default go env = %v, want GOWORK off and GOFLAGS empty", env)
+	}
+	o.GOWORK, o.IgnoreVendor = work, true
+	if env, err = Env(o, "GOWORK", "GOFLAGS"); err != nil {
+		t.Fatal(err)
+	}
+	if env["GOWORK"] != work || env["GOFLAGS"] != "-mod=readonly" {
+		t.Errorf("go env = %v, want GOWORK %s and GOFLAGS -mod=readonly", env, work)
+	}
+}
+
+// WorkUses gives the directories a go.work uses, as absolute paths.
+func TestWorkUses(t *testing.T) {
+	dir := testutil.WriteTree(t, map[string]string{
+		"go.work":    "go 1.22\n\nuse (\n\t./app\n\t./lib\n)\n",
+		"app/go.mod": "module example.com/app\n\ngo 1.22\n",
+		"lib/go.mod": "module example.com/lib\n\ngo 1.22\n",
+	})
+	work := filepath.Join(dir, "go.work")
+	got, err := WorkUses(Options{Go: testutil.Go(t), Dir: dir, GOWORK: work}, work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{filepath.Join(dir, "app"), filepath.Join(dir, "lib")}; !reflect.DeepEqual(got, want) {
+		t.Errorf("WorkUses = %v, want %v", got, want)
 	}
 }

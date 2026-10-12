@@ -70,8 +70,10 @@ In a cross build, take it from `pkgs.pkgsBuildBuild`, as in
 | `pname` | required | Derivation name. |
 | `version` | `null` | Appended to the derivation name. |
 | `src` | required | The source tree. |
-| `modRoot` | `"."` | Directory of `go.mod` inside `src`. |
+| `modRoot` | `"."` | Directory of `go.mod` inside `src`, or of a workspace's `go.work`. |
 | `subPackages` | `[ "." ]` | Main packages to build, relative to `modRoot`. |
+| `useGoWork` | `true` | Use the `go.work` at `modRoot` or above it inside `src`; see [Monorepos and `replace`](#monorepos-and-replace). `false` builds in module mode, as `GOWORK=off`. |
+| `useVendor` | `true` | Build from `vendor/` whenever `go build` would; see [Vendoring](#vendoring). `false` fetches modules instead, as `-mod=readonly`. |
 | `tags` | `[ ]` | Build tags. |
 | `ldflags` | `[ ]` | Linker flags, split as `go build -ldflags` splits them. |
 | `CGO_ENABLED` | `null` | `null` uses Go's default for the target, which with nixpkgs' Go is on, except in a cross build, where it is off; see [Cross-compilation](#cross-compilation). |
@@ -279,16 +281,40 @@ keep their import paths: a `packageOverrides` key is the import path or the
 module path the code imports, not the fork's. The binary's module info lists
 the replacements as `go build` does.
 
-`go.work` is ignored, so each module's `go.mod` needs its own `replace`
-lines. A directory `replace` that leaves `src` fails during evaluation: make
-`src` the directory that holds both modules, and `modRoot` the one with the
+A `go.work` at `modRoot` or in a directory above it, inside `src`, puts the
+build in workspace mode, as it does `go build`. Every module it uses builds
+from `src` with its own `go` directive, and the tests of their packages that
+the program contains run. A binary's module info lists the other workspace
+modules as `(devel)`. `modRoot` may then be the workspace root, with
+`subPackages` naming the programs. A `go.work` meant for local development,
+or one that uses directories outside `src`, is turned off with
+`useGoWork = false`.
+
+A directory `replace` that leaves `src` fails during evaluation: make `src`
+the directory that holds both modules, and `modRoot` the one with the
 program.
+
+### Vendoring
+
+With a `vendor/` directory, from `go mod vendor` or, in a workspace,
+`go work vendor`, the dependencies build from it whenever `go build` would:
+when there is a `vendor/` directory next to `go.mod` and the `go` directive is
+1.14 or later, or, in a workspace, next to `go.work` with `go` 1.22 or later.
+Nothing is fetched, so evaluation needs no network and no module cache, and
+module info records no checksums, as under `go build`.
+
+An out-of-date `vendor/` fails evaluation with Go's "inconsistent vendoring"
+message, and an import it lacks with "import lookup disabled by
+-mod=vendor": run `go mod vendor`, or set `useVendor = false` to fetch the
+modules instead. A `vendor/` directory that is not Go's, such as PHP's next to
+`go.mod`, needs `useVendor = false` too.
 
 ## What evaluation needs
 
 - `allow-unsafe-native-code-during-evaluation = true`, from `--option`,
   `NIX_CONFIG` or `nix.conf`. A flake's `nixConfig` cannot set it.
-- The project's modules: `go list` runs during evaluation with your
+- The project's modules, unless they are vendored (see
+  [Vendoring](#vendoring)): `go list` runs during evaluation with your
   `GOMODCACHE`, `GOPROXY`, `GOPRIVATE` and `NETRC`, and downloads what is
   missing.
 - Import-from-derivation (on by default): the tool and Go are built during
@@ -306,9 +332,8 @@ environment of whatever builds it: the Nix daemon's, on multi-user installs.
 
 ## Not yet supported
 
-`go.work`, `vendor/` directories, and packages with SWIG, Fortran or `.syso`
-files; `.syso` support may come later. Such packages are rejected during
-evaluation with a message naming them.
+Packages with SWIG, Fortran or `.syso` files; `.syso` support may come
+later. They are rejected during evaluation with a message naming them.
 
 The integration tests have been run on aarch64-darwin only; Linux is
 untested.

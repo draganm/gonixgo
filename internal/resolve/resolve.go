@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -32,6 +33,8 @@ type Args struct {
 	Cross       bool     `json:"cross"`      // build and host platforms differ: cgo is off unless asked for
 	CgoEnabled  *bool    `json:"cgoEnabled"` // nil: Go's default for the target
 	DoCheck     bool     `json:"doCheck"`    // run the -test pass and add the tests
+	GoWork      bool     `json:"goWork"`     // use the go.work at modRoot or above it inside src
+	Vendor      bool     `json:"vendor"`     // let go use vendor/, as go build does
 }
 
 // Options are the parts of the environment Run depends on.
@@ -55,23 +58,28 @@ func Run(a Args, opts Options, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	dir, err := moduleDir(src, a.ModRoot)
+	dir, workFile, err := moduleDir(src, a.ModRoot, a.GoWork)
 	if err != nil {
 		return err
 	}
+	// A go command that fails as a whole may be about the go.work or the
+	// vendor/ that gonixgo let it use.
+	failed := func(err error) error { return listFailed(err, dir, workFile, a.Vendor) }
 	moduleEnv, err := golist.ModuleEnv(a.Go, dir, opts.Stderr)
 	if err != nil {
 		return err
 	}
 	o := golist.Options{
-		Go:        a.Go,
-		Dir:       dir,
-		GOOS:      a.GOOS,
-		GOARCH:    a.GOARCH,
-		GOARM:     a.GOARM,
-		Tags:      a.Tags,
-		ModuleEnv: moduleEnv,
-		Stderr:    opts.Stderr,
+		Go:           a.Go,
+		Dir:          dir,
+		GOOS:         a.GOOS,
+		GOARCH:       a.GOARCH,
+		GOARM:        a.GOARM,
+		Tags:         a.Tags,
+		ModuleEnv:    moduleEnv,
+		Stderr:       opts.Stderr,
+		GOWORK:       workFile,
+		IgnoreVendor: !a.Vendor,
 	}
 	// nixpkgs' Go turns cgo on for every target, so a cross build would
 	// need a C toolchain for the target even for pure Go. Unless asked
@@ -91,7 +99,7 @@ func Run(a Args, opts Options, stdout io.Writer) error {
 	// mains. With the caller's off, a temporary one serves this run.
 	cache, err := golist.Env(o, "GOCACHE")
 	if err != nil {
-		return err
+		return failed(err)
 	}
 	if cache["GOCACHE"] == "off" {
 		dir, err := os.MkdirTemp("", "gonixgo-gocache-")
@@ -104,22 +112,23 @@ func Run(a Args, opts Options, stdout io.Writer) error {
 
 	env, err := golist.Env(o, envKeys...)
 	if err != nil {
-		return err
+		return failed(err)
 	}
 	pkgs, err := golist.List(o, patterns(a.SubPackages)...)
 	if err != nil {
-		return err
+		return failed(err)
 	}
-	sums := map[string]string{}
-	if data, err := os.ReadFile(filepath.Join(o.Dir, "go.sum")); err == nil {
-		sums = modcache.ParseGoSum(data)
+	sums, err := readSums(o, workFile)
+	if err != nil {
+		return failed(err)
 	}
 
 	g, err := graph.Build(graph.Input{Packages: pkgs, Src: src, Env: env, Tags: a.Tags, Sums: sums})
 	if err != nil {
 		var loadErr *graph.LoadError
-		if crossCgoOff && errors.As(err, &loadErr) {
-			loadErr.CrossCgoOff = true
+		if errors.As(err, &loadErr) {
+			loadErr.CrossCgoOff = crossCgoOff
+			loadErr.Hints = modeLines(dir, workFile, a.Vendor)
 		}
 		return err
 	}
@@ -128,6 +137,12 @@ func Run(a Args, opts Options, stdout io.Writer) error {
 	}
 	if a.DoCheck && len(g.Tested) > 0 {
 		if err := addTests(g, o, graph.Input{Src: src, Env: env, Tags: a.Tags, Sums: sums}); err != nil {
+			var loadErr *graph.LoadError
+			if errors.As(err, &loadErr) {
+				loadErr.Hints = modeLines(dir, workFile, a.Vendor)
+			} else {
+				err = failed(err)
+			}
 			return err
 		}
 	}
@@ -170,21 +185,104 @@ func warnCgoLeftOut(o golist.Options, patterns []string, stderr io.Writer) {
 		strings.Join(names, ", "))
 }
 
-// moduleDir is the directory of go.mod: modRoot, which must stay inside
-// src. "" means src itself.
-func moduleDir(src, modRoot string) (string, error) {
+// moduleDir is the directory go list runs in, modRoot inside src ("" is
+// src itself), and with work set the go.work to use: the first one in it
+// or a directory above it, up to src. It needs a go.mod or a go.work.
+func moduleDir(src, modRoot string, work bool) (dir, workFile string, err error) {
 	rel := filepath.FromSlash(modRoot)
 	if rel == "" {
 		rel = "."
 	}
 	if !filepath.IsLocal(rel) {
-		return "", fmt.Errorf("modRoot %q must be a directory inside src", modRoot)
+		return "", "", fmt.Errorf("modRoot %q must be a directory inside src", modRoot)
 	}
-	dir := filepath.Join(src, rel)
-	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
-		return "", fmt.Errorf("modRoot %q: no go.mod in %s", modRoot, dir)
+	dir = filepath.Join(src, rel)
+	if work {
+		workFile = findWorkFile(src, dir)
 	}
-	return dir, nil
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil && workFile == "" {
+		msg := fmt.Sprintf("modRoot %q: no go.mod in %s", modRoot, dir)
+		if work {
+			msg += ", and no go.work in it or above it inside src"
+		}
+		return "", "", errors.New(msg)
+	}
+	return dir, workFile, nil
+}
+
+// findWorkFile returns the first go.work in dir or a directory above it,
+// up to and including src, or "" if there is none. dir is inside src.
+func findWorkFile(src, dir string) string {
+	for {
+		f := filepath.Join(dir, "go.work")
+		if info, err := os.Stat(f); err == nil && !info.IsDir() {
+			return f
+		}
+		parent := filepath.Dir(dir)
+		if dir == src || parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// readSums reads the checksums go.sum files hold: modRoot's in module
+// mode; in workspace mode go.work.sum's and those of every directory the
+// go.work uses.
+func readSums(o golist.Options, workFile string) (map[string]string, error) {
+	files := []string{filepath.Join(o.Dir, "go.sum")}
+	if workFile != "" {
+		uses, err := golist.WorkUses(o, workFile)
+		if err != nil {
+			return nil, err
+		}
+		files = []string{filepath.Join(filepath.Dir(workFile), "go.work.sum")}
+		for _, dir := range uses {
+			files = append(files, filepath.Join(dir, "go.sum"))
+		}
+	}
+	sums := map[string]string{}
+	for _, f := range files {
+		// A module without go.sum has no checksums to give.
+		if data, err := os.ReadFile(f); err == nil {
+			maps.Copy(sums, modcache.ParseGoSum(data))
+		}
+	}
+	return sums, nil
+}
+
+// modeLines name the go.work and the vendor/ gonixgo let go use, and how
+// to turn each off. Errors may come from either.
+func modeLines(dir, workFile string, vendor bool) []string {
+	var lines []string
+	if workFile != "" {
+		lines = append(lines, "gonixgo used the workspace "+workFile+"; set useGoWork = false to build without it")
+	}
+	if vendor && hasVendor(dir, workFile) {
+		lines = append(lines, "gonixgo let go use vendor/; set useVendor = false to fetch modules instead")
+	}
+	return lines
+}
+
+// listFailed adds the mode lines to err, from a go command that failed as
+// a whole.
+func listFailed(err error, dir, workFile string, vendor bool) error {
+	lines := modeLines(dir, workFile, vendor)
+	if len(lines) == 0 {
+		return err
+	}
+	return fmt.Errorf("%w\n%s", err, strings.Join(lines, "\n"))
+}
+
+// hasVendor reports whether there is a vendor directory where go looks for
+// one: next to the go.work in workspace mode, next to go.mod otherwise.
+// Its contents do not matter; go decides on the directory alone.
+func hasVendor(dir, workFile string) bool {
+	if workFile != "" {
+		dir = filepath.Dir(workFile)
+	}
+	info, err := os.Stat(filepath.Join(dir, "vendor"))
+	return err == nil && info.IsDir()
 }
 
 // addTests runs the -test pass over the tested packages of g and adds

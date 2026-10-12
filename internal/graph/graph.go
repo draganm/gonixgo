@@ -31,11 +31,12 @@ type Package struct {
 	ImportPath string
 	Name       string // derivation name
 	SrcName    string // store name of a local package's source
-	Local      bool   // in the main module
+	Local      bool   // built from src: a main module's package, a directory replacement's, or a vendored one
 	IsMain     bool
 	ModuleKey  string // third-party: key into Graph.Modules
 	ModulePath string
 	Subdir     string // package directory relative to its source root, "" for the root
+	VendorDir  string // vendored: the vendor directory relative to the source root, "" otherwise
 	TrimTo     string // what -trimpath rewrites the source directory to, "" to keep it
 	TestSrc    string // compiles from the test source of this tested package, "" otherwise
 	TestMain   string // a test main: the source go list generated, "" otherwise
@@ -83,9 +84,9 @@ type Graph struct {
 	GOARCH     string
 	CgoEnabled bool
 	Modules    map[string]*Module
-	// DepModules are the module info entries of the modules, other than
-	// the main one, that provide the program's packages, by the path they
-	// are required under.
+	// DepModules are the module info entries of the modules that provide
+	// the program's packages, by the path they are required under. A
+	// binary leaves out its own module.
 	DepModules map[string]modinfo.Module
 	Packages   map[string]*Package
 	Bins       []*Binary
@@ -141,6 +142,9 @@ type LoadError struct {
 	// CrossCgoOff says cgo is off only because the build is cross, which
 	// may be why packages did not load.
 	CrossCgoOff bool
+	// Hints are lines for the end of the message, such as the go.work and
+	// the vendor/ the build used and how to turn each off.
+	Hints []string
 }
 
 // crossCgoHint follows load problems in a cross build that left cgo off.
@@ -183,6 +187,9 @@ func (e *LoadError) Error() string {
 	}
 	if e.CrossCgoOff {
 		b.WriteString("\n" + crossCgoHint)
+	}
+	for _, h := range e.Hints {
+		b.WriteString("\n" + h)
 	}
 	if e.Tests {
 		b.WriteString("\nset doCheck = false to build without tests")
@@ -292,22 +299,27 @@ func (g *Graph) addModule(mod *Module, sums map[string]string) {
 }
 
 // addDepModule records the module info entry of m, a module that provides
-// a package, unless m is the main module: its path and version as
-// required, and for a replaced module the replacement's path, version and
-// sum. A directory replacement shows as written, with the version (devel)
-// and no sum.
+// a package: its path and version as required, and for a replaced module
+// the replacement's path, version and sum. A main module, which only a
+// workspace has more than one of, shows as (devel), as does a directory
+// replacement. Vendor mode records no checksums.
 func (g *Graph) addDepModule(m *golist.Module, sums map[string]string) {
-	if m.Main {
-		return
-	}
 	d := modinfo.Module{Path: m.Path, Version: m.Version}
+	vendored := !m.Main && m.Dir == ""
 	switch r := m.Replace; {
+	case m.Main:
+		d.Version = "(devel)"
 	case r == nil:
-		d.Sum = sums[m.Path+"@"+m.Version]
+		if !vendored {
+			d.Sum = sums[m.Path+"@"+m.Version]
+		}
 	case r.Version == "":
 		d.Replace = &modinfo.Module{Path: r.Path, Version: "(devel)"}
 	default:
-		d.Replace = &modinfo.Module{Path: r.Path, Version: r.Version, Sum: sums[r.Path+"@"+r.Version]}
+		d.Replace = &modinfo.Module{Path: r.Path, Version: r.Version}
+		if !vendored {
+			d.Replace.Sum = sums[r.Path+"@"+r.Version]
+		}
 	}
 	g.DepModules[m.Path] = d
 }
@@ -341,7 +353,7 @@ func (g *Graph) newBinary(p *golist.Package, in Input) *Binary {
 	for _, ip := range deps {
 		path := g.Packages[ip].ModulePath
 		d, ok := g.DepModules[path]
-		if !ok || seen[path] {
+		if !ok || seen[path] || path == p.Module.Path {
 			continue
 		}
 		seen[path] = true

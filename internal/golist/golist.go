@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -85,6 +86,9 @@ type Options struct {
 	ModuleEnv  map[string]string // where modules come from, see ModuleEnv
 	GOCACHE    string            // build cache, "" for the caller's
 	Stderr     io.Writer
+
+	GOWORK       string // the go.work to use, "" for none (GOWORK=off)
+	IgnoreVendor bool   // ignore vendor/ (-mod=readonly) instead of letting go choose
 }
 
 // buildConfig are the variables that change what gets built. The builders
@@ -118,7 +122,7 @@ func (o Options) environ() []string {
 // environWith is environ without GOENV=off, plus extra.
 func (o Options) environWith(extra map[string]string) []string {
 	set := map[string]string{
-		"GOFLAGS":     "-mod=readonly",
+		"GOFLAGS":     "",
 		"GOWORK":      "off",
 		"GOTOOLCHAIN": "local",
 		// os/exec only sets PWD when Env is nil. go derives package
@@ -127,6 +131,12 @@ func (o Options) environWith(extra map[string]string) []string {
 	}
 	for k, v := range extra {
 		set[k] = v
+	}
+	if o.IgnoreVendor {
+		set["GOFLAGS"] = "-mod=readonly"
+	}
+	if o.GOWORK != "" {
+		set["GOWORK"] = o.GOWORK
 	}
 	if o.GOCACHE != "" {
 		set["GOCACHE"] = o.GOCACHE
@@ -234,6 +244,27 @@ func Decode(r io.Reader) ([]Package, error) {
 // Env runs `go env -json` for keys.
 func Env(o Options, keys ...string) (map[string]string, error) {
 	return decodeEnv(o.command(append([]string{"env", "-json"}, keys...)...))
+}
+
+// WorkUses returns the directories the go.work at path uses, absolute.
+func WorkUses(o Options, path string) ([]string, error) {
+	out, err := o.command("work", "edit", "-json", path).Output()
+	if err != nil {
+		return nil, fmt.Errorf("go work edit -json %s: %w", path, err)
+	}
+	var work struct{ Use []struct{ DiskPath string } }
+	if err := json.Unmarshal(out, &work); err != nil {
+		return nil, fmt.Errorf("decoding go work edit output: %w", err)
+	}
+	dirs := make([]string, 0, len(work.Use))
+	for _, u := range work.Use {
+		dir := filepath.FromSlash(u.DiskPath)
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(filepath.Dir(path), dir)
+		}
+		dirs = append(dirs, dir)
+	}
+	return dirs, nil
 }
 
 func decodeEnv(cmd *exec.Cmd) (map[string]string, error) {
